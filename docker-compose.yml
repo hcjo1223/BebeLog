@@ -1,0 +1,40 @@
+version: "3.8"
+
+# 로컬 개발 환경 및 Coolify Docker Compose 배포용 설정
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL:-postgresql://babyuser:babypassword@postgres:5432/baby_db?schema=public}
+      - OCI_S3_ENDPOINT=${OCI_S3_ENDPOINT:-}
+      - OCI_S3_REGION=${OCI_S3_REGION:-ap-chuncheon-1}
+      - OCI_S3_BUCKET=${OCI_S3_BUCKET:-baby-diary-media}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-babyuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-babypassword}
+      POSTGRES_DB: ${POSTGRES_DB:-baby_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-babyuser} -d ${POSTGRES_DB:-baby_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

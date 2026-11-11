@@ -1,0 +1,18 @@
+{
+  "name": "베베로그 (BebeLog) - 육아 기록 & 감성 육아일기",
+  "short_name": "베베로그",
+  "description": "Baby Buddy & Memos 기반 공동 육아 트래커 및 성장 일기 모바일 웹",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0d8a72",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
