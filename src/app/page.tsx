@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { signOut } from "next-auth/react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -34,6 +35,9 @@ import {
   Server,
   ShieldCheck,
   Users,
+  Copy,
+  LogOut,
+  X,
 } from "lucide-react";
 import {
   ActivityCategory,
@@ -48,13 +52,38 @@ import {
   INITIAL_GROWTH_RECORDS,
   RunningTimer,
 } from "@/lib/mock-data";
+import { AuthGate } from "@/components/AuthGate";
+import { OnboardingSetup } from "@/components/OnboardingSetup";
 
 type ActiveTab = "HOME" | "CALENDAR" | "REPORTS" | "NURSERY" | "DIARY";
+type AuthPhase = "LOADING" | "UNAUTHENTICATED" | "ONBOARDING" | "READY" | "DEMO";
+
+interface AuthUserInfo {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl?: string | null;
+}
+
+interface HouseholdInfo {
+  id: string;
+  name: string;
+  inviteCode: string;
+  myRelationLabel: string;
+  myRole: string;
+  members: {
+    id: string;
+    relationLabel: string;
+    role: string;
+    name: string;
+    avatarUrl?: string | null;
+  }[];
+}
 
 // 생후 일수(D+Day), 주수(weeks), 개월 수 계산 유틸리티 (Sprout Track 헤더 스타일)
-function calculateAgeInfo(birthDateStr: string, dueDateStr?: string) {
+function calculateAgeInfo(birthDateStr: string, dueDateStr: string | undefined, nowMs: number) {
   const birth = new Date(birthDateStr);
-  const today = new Date("2026-11-11T12:00:00+09:00");
+  const today = new Date(nowMs);
   const diffDays = Math.max(
     1,
     Math.floor((today.getTime() - birth.getTime()) / (1000 * 60 * 60 * 24)) + 1
@@ -129,18 +158,26 @@ function formatKoreanTime(isoDate: string): string {
 }
 
 export default function SproutTrackKoreanApp() {
+  // 인증 및 DB 부트스트랩 상태
+  const [authPhase, setAuthPhase] = useState<AuthPhase>("LOADING");
+  const [googleConfigured, setGoogleConfigured] = useState<boolean>(false);
+  const [authUser, setAuthUser] = useState<AuthUserInfo | null>(null);
+  const [household, setHousehold] = useState<HouseholdInfo | null>(null);
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState(false);
+
   // 다크 모드 상태 (Sprout Track Deep Navy 테마: #111827)
   const [darkMode, setDarkMode] = useState(false);
   // 현재 활성화된 하단 탭
   const [activeTab, setActiveTab] = useState<ActiveTab>("HOME");
 
   // 아이 프로필 및 다둥이 선택 상태
-  const [babies] = useState<BabyProfile[]>(INITIAL_BABIES);
+  const [babies, setBabies] = useState<BabyProfile[]>(INITIAL_BABIES);
   const [selectedBabyId, setSelectedBabyId] = useState<string>(INITIAL_BABIES[0].id);
   const [showBabySelector, setShowBabySelector] = useState(false);
 
-  // 공동 양육자(Caretaker) PIN 전환 상태
-  const [currentCaregiver, setCurrentCaregiver] = useState<"엄마" | "아빠" | "할머니">("엄마");
+  // 공동 양육자(Caretaker) 호칭 상태
+  const [currentCaregiver, setCurrentCaregiver] = useState<string>("엄마");
 
   // 일일 요약(Daily Summary) 접기/펼치기 및 24시간 히트맵 토글
   const [summaryExpanded, setSummaryExpanded] = useState(true);
@@ -217,13 +254,61 @@ export default function SproutTrackKoreanApp() {
     };
   }, []);
 
-  // 1초 주기 타이머 갱신
+  // 1초 주기 타이머 갱신 (클라이언트 마운트 직후 실제 현재 시각으로 동기화)
   useEffect(() => {
+    setNowMs(Date.now());
     const interval = setInterval(() => {
       setNowMs(Date.now());
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Google 인증 및 PostgreSQL 초기 데이터 부트스트랩
+  const loadBootstrap = useCallback(async (babyIdParam?: string) => {
+    try {
+      const url = babyIdParam
+        ? `/api/bootstrap?babyId=${encodeURIComponent(babyIdParam)}`
+        : "/api/bootstrap";
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) {
+        setAuthPhase("UNAUTHENTICATED");
+        return;
+      }
+      const data = await res.json();
+      setGoogleConfigured(Boolean(data.googleConfigured));
+
+      if (!data.authenticated) {
+        setAuthPhase("UNAUTHENTICATED");
+        return;
+      }
+
+      setAuthUser(data.user);
+      if (data.needsOnboarding) {
+        setAuthPhase("ONBOARDING");
+        return;
+      }
+
+      setHousehold(data.household);
+      if (data.household?.myRelationLabel) {
+        setCurrentCaregiver(data.household.myRelationLabel);
+      }
+      if (Array.isArray(data.babies) && data.babies.length > 0) {
+        setBabies(data.babies);
+        setSelectedBabyId(data.activeBabyId || data.babies[0].id);
+      }
+      setActivities(data.activities || []);
+      setGrowthRecords(data.growthRecords || []);
+      setDiaries(data.diaryEntries || []);
+      setRunningTimer(data.activeTimer || null);
+      setAuthPhase("READY");
+    } catch {
+      setAuthPhase("UNAUTHENTICATED");
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBootstrap();
+  }, [loadBootstrap]);
 
   const currentBaby = useMemo(
     () => babies.find((b) => b.id === selectedBabyId) ?? babies[0],
@@ -231,8 +316,8 @@ export default function SproutTrackKoreanApp() {
   );
 
   const ageInfo = useMemo(
-    () => calculateAgeInfo(currentBaby.birthDate, currentBaby.dueDate),
-    [currentBaby]
+    () => calculateAgeInfo(currentBaby.birthDate, currentBaby.dueDate, nowMs),
+    [currentBaby, nowMs]
   );
 
   const babyActivities = useMemo(
@@ -343,41 +428,123 @@ export default function SproutTrackKoreanApp() {
     return runningTimer.accumulatedSec + elapsed;
   }, [runningTimer, nowMs]);
 
+  // 공통 활동 기록 DB 저장 헬퍼 (READY 모드일 때 PostgreSQL에 영구 저장)
+  const persistActivity = async (newRecord: ActivityRecord) => {
+    setActivities((prev) => [newRecord, ...prev]);
+    if (authPhase !== "READY") return;
+
+    try {
+      const res = await fetch("/api/activities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          babyId: newRecord.babyId,
+          category: newRecord.category,
+          startedAt: newRecord.startedAt,
+          endedAt: newRecord.endedAt,
+          durationSec: newRecord.durationSec,
+          amountMl: newRecord.amountMl,
+          valueNum: newRecord.valueNum,
+          details: newRecord.details,
+          note: newRecord.note,
+          summaryTitle: newRecord.summaryTitle,
+          subDetail: newRecord.subDetail,
+          recordedByLabel: newRecord.recordedBy,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data) {
+          setActivities((prev) =>
+            prev.map((item) => (item.id === newRecord.id ? json.data : item))
+          );
+        }
+      }
+    } catch (err) {
+      console.error("[persistActivity] DB 저장 실패:", err);
+    }
+  };
+
   // 타이머 시작
-  const handleStartTimer = (
+  const handleStartTimer = async (
     category: RunningTimer["category"],
     label: string
   ) => {
+    const startedAt = Date.now();
     setRunningTimer({
-      id: `timer-${Date.now()}`,
+      id: `timer-${startedAt}`,
       category,
       label,
-      startedAt: Date.now(),
+      startedAt,
       startedBy: currentCaregiver,
       isPaused: false,
       accumulatedSec: 0,
     });
+    if (authPhase === "READY") {
+      fetch("/api/timers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          babyId: currentBaby.id,
+          category,
+          label,
+          status: "RUNNING",
+          startedAt,
+          accumulatedSec: 0,
+        }),
+      }).catch(() => {});
+    }
   };
 
   // 타이머 일시정지/재개
   const handleTogglePauseTimer = () => {
     if (!runningTimer) return;
     if (runningTimer.isPaused) {
+      const nextStartedAt = Date.now();
       setRunningTimer({
         ...runningTimer,
-        startedAt: Date.now(),
+        startedAt: nextStartedAt,
         isPaused: false,
       });
+      if (authPhase === "READY") {
+        fetch("/api/timers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            babyId: currentBaby.id,
+            category: runningTimer.category,
+            label: runningTimer.label,
+            status: "RUNNING",
+            startedAt: nextStartedAt,
+            accumulatedSec: runningTimer.accumulatedSec,
+          }),
+        }).catch(() => {});
+      }
     } else {
       const elapsed = Math.max(
         0,
         Math.floor((Date.now() - runningTimer.startedAt) / 1000)
       );
+      const nextAcc = runningTimer.accumulatedSec + elapsed;
       setRunningTimer({
         ...runningTimer,
         isPaused: true,
-        accumulatedSec: runningTimer.accumulatedSec + elapsed,
+        accumulatedSec: nextAcc,
       });
+      if (authPhase === "READY") {
+        fetch("/api/timers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            babyId: currentBaby.id,
+            category: runningTimer.category,
+            label: runningTimer.label,
+            status: "PAUSED",
+            startedAt: runningTimer.startedAt,
+            accumulatedSec: nextAcc,
+          }),
+        }).catch(() => {});
+      }
     }
   };
 
@@ -427,8 +594,13 @@ export default function SproutTrackKoreanApp() {
       details: { timerCategory: runningTimer.category },
     };
 
-    setActivities((prev) => [newRecord, ...prev]);
+    if (authPhase === "READY") {
+      fetch(`/api/timers?babyId=${encodeURIComponent(currentBaby.id)}`, {
+        method: "DELETE",
+      }).catch(() => {});
+    }
     setRunningTimer(null);
+    void persistActivity(newRecord);
   };
 
   // 수유방 모드(Nursery Mode) 원탭 즉시 기록 핸들러
@@ -450,7 +622,7 @@ export default function SproutTrackKoreanApp() {
       subDetail: detail,
       details: diaperKind ? { diaperType: diaperKind } : {},
     };
-    setActivities((prev) => [newRecord, ...prev]);
+    void persistActivity(newRecord);
   };
 
   // 바텀 시트 상세 기록 저장 핸들러
@@ -549,43 +721,53 @@ export default function SproutTrackKoreanApp() {
       details,
     };
 
-    setActivities((prev) => [newRecord, ...prev]);
+    void persistActivity(newRecord);
     setQuickNote("");
     setSheetCategory(null);
   };
 
   // 타임라인 삭제 및 Undo 복구
-  const handleDeleteActivity = (id: string) => {
+  const handleDeleteActivity = async (id: string) => {
     const target = activities.find((a) => a.id === id);
     if (target) setDeletedActivityBackup(target);
     setActivities((prev) => prev.filter((a) => a.id !== id));
+
+    if (authPhase === "READY" && !id.startsWith("act-")) {
+      fetch(`/api/activities/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }).catch((err) => console.error("[DELETE /api/activities] 오류:", err));
+    }
   };
 
   const handleUndoDelete = () => {
     if (!deletedActivityBackup) return;
-    setActivities((prev) => [deletedActivityBackup, ...prev]);
+    const backup = deletedActivityBackup;
     setDeletedActivityBackup(null);
+    void persistActivity(backup);
   };
 
   // 감성 육아일기 저장
-  const handleSaveDiary = (e: React.FormEvent) => {
+  const handleSaveDiary = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!diaryTitle.trim() || !diaryContent.trim()) return;
+
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const parsedTags = diaryTags
+      .split(",")
+      .map((t) => t.trim().replace(/^#/, ""))
+      .filter(Boolean);
 
     const newDiary: DiaryItem = {
       id: `diary-${Date.now()}`,
       babyId: currentBaby.id,
-      diaryDate: "2026-11-11",
+      diaryDate: todayIso,
       title: diaryTitle.trim(),
       content: diaryContent.trim(),
       mood: diaryMood,
       author: currentCaregiver,
-      tags: diaryTags
-        .split(",")
-        .map((t) => t.trim().replace(/^#/, ""))
-        .filter(Boolean),
+      tags: parsedTags,
       isMilestone: diaryMilestone,
-      photos: ["new-upload"],
+      photos: [],
       dailySummary: {
         totalFeedingMl: dailySummary.totalMl,
         totalSleepHours: Number((dailySummary.totalSleepMin / 60).toFixed(1)),
@@ -599,18 +781,47 @@ export default function SproutTrackKoreanApp() {
     setDiaryMilestone(false);
     setShowDiaryModal(false);
     setActiveTab("DIARY");
+
+    if (authPhase === "READY") {
+      try {
+        const res = await fetch("/api/diary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            babyId: currentBaby.id,
+            diaryDate: todayIso,
+            title: newDiary.title,
+            content: newDiary.content,
+            mood: newDiary.mood,
+            tags: parsedTags,
+            isMilestone: newDiary.isMilestone,
+          }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.data) {
+            setDiaries((prev) =>
+              prev.map((d) => (d.id === newDiary.id ? json.data : d))
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[POST /api/diary] 오류:", err);
+      }
+    }
   };
 
   // 성장 측정값 추가 저장
-  const handleSaveGrowth = (e: React.FormEvent) => {
+  const handleSaveGrowth = async (e: React.FormEvent) => {
     e.preventDefault();
     const w = parseFloat(newWeight) || currentBaby.weightKg;
     const h = parseFloat(newHeight) || currentBaby.heightCm;
     const hc = parseFloat(newHead) || currentBaby.headCm;
+    const todayIso = new Date().toISOString().slice(0, 10);
 
     const newItem: GrowthItem = {
       id: `g-${Date.now()}`,
-      date: "2026-11-11",
+      date: todayIso,
       ageDays: ageInfo.diffDays,
       weightKg: w,
       heightCm: h,
@@ -621,6 +832,33 @@ export default function SproutTrackKoreanApp() {
     setGrowthRecords((prev) => [...prev, newItem]);
     setNewGrowthNote("");
     setShowGrowthModal(false);
+
+    if (authPhase === "READY") {
+      try {
+        const res = await fetch("/api/growth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            babyId: currentBaby.id,
+            measuredDate: todayIso,
+            weightKg: w > 0 ? w : undefined,
+            heightCm: h > 0 ? h : undefined,
+            headCm: hc > 0 ? hc : undefined,
+            note: newItem.note,
+          }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.data) {
+            setGrowthRecords((prev) =>
+              prev.map((g) => (g.id === newItem.id ? json.data : g))
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[POST /api/growth] 오류:", err);
+      }
+    }
   };
 
   // Sprout Track 원형 일러스트 타일 목록 정의 (public/*-128.png 정품 에셋 활용)
@@ -688,6 +926,37 @@ export default function SproutTrackKoreanApp() {
     },
   ];
 
+  if (authPhase === "LOADING") {
+    return (
+      <div className="min-h-dvh flex flex-col items-center justify-center bg-[#fdfcf8] dark:bg-slate-950 text-slate-600 dark:text-slate-300 gap-3">
+        <div className="w-12 h-12 rounded-2xl bg-[#0d8a72]/10 flex items-center justify-center animate-pulse">
+          <img src="/sprout-128.png" alt="로딩" className="w-8 h-8 object-contain" />
+        </div>
+        <p className="text-xs font-bold">베베로그 데이터를 불러오는 중...</p>
+      </div>
+    );
+  }
+
+  if (authPhase === "UNAUTHENTICATED") {
+    return (
+      <AuthGate
+        googleConfigured={googleConfigured}
+        onEnterDemoMode={() => setAuthPhase("DEMO")}
+      />
+    );
+  }
+
+  if (authPhase === "ONBOARDING" && authUser) {
+    return (
+      <OnboardingSetup
+        user={authUser}
+        onComplete={async () => {
+          await loadBootstrap();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col min-h-dvh pb-24 bg-white dark:bg-[#111827] text-slate-900 dark:text-slate-100 transition-colors">
       {/* =====================================================================
@@ -724,7 +993,7 @@ export default function SproutTrackKoreanApp() {
                 </button>
               </div>
               <h1 className="text-[14px] font-extrabold tracking-tight leading-snug truncate">
-                튼튼이네 ·{" "}
+                {household?.name || "튼튼이네"} ·{" "}
                 {activeTab === "HOME"
                   ? "일일 기록장"
                   : activeTab === "CALENDAR"
@@ -739,6 +1008,16 @@ export default function SproutTrackKoreanApp() {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {/* 계정 / 가족 초대코드 설정 버튼 */}
+            <button
+              onClick={() => setShowAccountModal(true)}
+              aria-label="계정 및 가족 설정"
+              className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition shrink-0"
+              title="계정 및 가족 설정"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
             {/* 다크 모드 토글 아이콘 */}
             <button
               onClick={() => setDarkMode((d) => !d)}
@@ -772,13 +1051,16 @@ export default function SproutTrackKoreanApp() {
                   </p>
                   {babies.map((b) => {
                     const isSelected = b.id === currentBaby.id;
-                    const info = calculateAgeInfo(b.birthDate);
+                    const info = calculateAgeInfo(b.birthDate, b.dueDate, nowMs);
                     return (
                       <button
                         key={b.id}
                         onClick={() => {
                           setSelectedBabyId(b.id);
                           setShowBabySelector(false);
+                          if (authPhase === "READY") {
+                            void loadBootstrap(b.id);
+                          }
                         }}
                         className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs transition ${
                           isSelected
@@ -2173,6 +2455,110 @@ export default function SproutTrackKoreanApp() {
           </button>
         </div>
       </nav>
+
+      {/* Google 계정 & 가족 초대코드 설정 모달 */}
+      {showAccountModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-3"
+          onClick={() => setShowAccountModal(false)}
+        >
+          <div
+            className="w-full max-w-[440px] bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold flex items-center gap-2">
+                <Users className="w-5 h-5 text-[#0d8a72]" />
+                계정 및 가족 설정
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAccountModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {authPhase === "READY" && authUser ? (
+              <>
+                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 flex items-center gap-3">
+                  {authUser.avatarUrl ? (
+                    <img
+                      src={authUser.avatarUrl}
+                      alt={authUser.name}
+                      className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-[#0d8a72] text-white flex items-center justify-center font-bold">
+                      {authUser.name[0]}
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold truncate">
+                      {authUser.name} ({household?.myRelationLabel})
+                    </p>
+                    <p className="text-xs text-slate-500 truncate">{authUser.email}</p>
+                  </div>
+                </div>
+
+                {household && (
+                  <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 space-y-2">
+                    <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                      공동 양육자 초대 코드 ({household.name})
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 text-center font-mono text-base font-extrabold tracking-widest text-[#0d8a72]">
+                        {household.inviteCode}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(household.inviteCode);
+                          setCopiedInvite(true);
+                          setTimeout(() => setCopiedInvite(false), 2000);
+                        }}
+                        className="min-h-[42px] px-3.5 rounded-xl bg-[#0d8a72] text-white text-xs font-bold flex items-center gap-1.5"
+                      >
+                        {copiedInvite ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                        {copiedInvite ? "복사됨" : "복사"}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
+                      배우자나 가족이 Google 로그인 후 이 코드를 입력하면 아기 기록을 함께 보고 작성할 수 있습니다.
+                    </p>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => signOut({ callbackUrl: "/" })}
+                  className="w-full min-h-[46px] rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-bold text-sm flex items-center justify-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Google 계정 로그아웃
+                </button>
+              </>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  현재는 샘플 데이터 미리보기 모드입니다. Google 계정으로 로그인하면 개인 PostgreSQL DB에 처음부터 우리 아기 기록을 저장할 수 있습니다.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAccountModal(false);
+                    setAuthPhase("UNAUTHENTICATED");
+                  }}
+                  className="w-full min-h-[48px] rounded-2xl bg-[#0d8a72] text-white font-bold text-sm"
+                >
+                  Google 로그인 화면으로 이동
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
