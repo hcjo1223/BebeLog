@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { isGoogleAuthConfigured } from "@/auth";
 import { prisma } from "@/lib/db";
 import { getAuthenticatedUser, mapActivityLogToRecord } from "@/lib/auth-helper";
+import { mapActiveTimer } from "@/lib/timers";
+import { isStorageConfigured } from "@/lib/storage";
+import { parseDiarySummary } from "@/lib/validators/diary";
 
 // 초기 앱 부팅 시 인증 상태, 가족/아기 프로필, 최근 타임라인 데이터를 한 번에 조회
 export async function GET(request: Request) {
@@ -71,12 +74,25 @@ export async function GET(request: Request) {
           where: { babyId: activeBaby.id },
           orderBy: { diaryDate: "desc" },
           take: 50,
-          include: { author: { select: { name: true } } },
+          include: {
+            author: { select: { name: true } },
+            media: { orderBy: { sortOrder: "asc" } },
+          },
         }),
         prisma.activeTimer.findFirst({
           where: { babyId: activeBaby.id },
           orderBy: { updatedAt: "desc" },
-          include: { starter: { select: { name: true } } },
+          include: {
+            starter: {
+              select: {
+                name: true,
+                households: {
+                  where: { householdId: membership.householdId },
+                  select: { relationLabel: true },
+                },
+              },
+            },
+          },
         }),
       ]);
 
@@ -148,24 +164,17 @@ export async function GET(request: Request) {
         author: d.author?.name || membership.relationLabel,
         tags: d.tags,
         isMilestone: d.isMilestone,
-        photos: [],
-        dailySummary: {
-          totalFeedingMl: 0,
-          totalSleepHours: 0,
-          diaperCount: 0,
-        },
+        photos: d.media.map((m) => ({
+          id: m.id,
+          url: `/api/media/${m.id}`,
+          type: m.mediaType === "VIDEO" ? ("VIDEO" as const) : ("IMAGE" as const),
+        })),
+        dailySummary: parseDiarySummary(d.dailySummary),
       })),
       activeTimer: activeTimer
-        ? {
-            id: activeTimer.id,
-            category: activeTimer.category,
-            label: activeTimer.note || activeTimer.category,
-            startedAt: activeTimer.startedAt.getTime(),
-            startedBy: activeTimer.starter?.name || membership.relationLabel,
-            isPaused: activeTimer.status === "PAUSED",
-            accumulatedSec: activeTimer.accumulatedSec,
-          }
+        ? mapActiveTimer(activeTimer, membership.relationLabel)
         : null,
+      mediaConfigured: isStorageConfigured(),
     });
   } catch (err) {
     console.error("[GET /api/bootstrap] 오류:", err);

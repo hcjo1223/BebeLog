@@ -52,6 +52,12 @@ export interface RunningTimer {
   accumulatedSec: number;
 }
 
+export interface DiaryPhoto {
+  id: string;
+  url: string;
+  type: "IMAGE" | "VIDEO";
+}
+
 export interface DiaryItem {
   id: string;
   babyId: string;
@@ -62,7 +68,7 @@ export interface DiaryItem {
   author: string;
   tags: string[];
   isMilestone: boolean;
-  photos: string[];
+  photos: DiaryPhoto[];
   dailySummary: {
     totalFeedingMl: number;
     totalSleepHours: number;
@@ -204,7 +210,7 @@ export const INITIAL_DIARIES: DiaryItem[] = [
     author: "엄마",
     tags: ["첫뒤집기", "생후97일", "폭풍성장"],
     isMilestone: true,
-    photos: ["milestone-rollover"],
+    photos: [],
     dailySummary: {
       totalFeedingMl: 780,
       totalSleepHours: 13.5,
@@ -222,7 +228,7 @@ export const INITIAL_DIARIES: DiaryItem[] = [
     author: "아빠",
     tags: ["목욕시간", "아빠랑교감", "배넷웃음"],
     isMilestone: false,
-    photos: ["bath-smile"],
+    photos: [],
     dailySummary: {
       totalFeedingMl: 810,
       totalSleepHours: 14.2,

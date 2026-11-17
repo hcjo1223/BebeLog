@@ -105,15 +105,15 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
   };
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[#fdfcf8] dark:bg-slate-950 text-slate-800 dark:text-slate-100">
+    <div className="min-h-dvh flex flex-col bg-[#fdfcf8] dark:bg-night-900 text-slate-800 dark:text-slate-100">
       {/* 상단 인사 헤더 */}
-      <div className="bg-[#0d8a72] text-white px-5 pt-8 pb-7 rounded-b-[2rem] shadow-md">
+      <div className="bg-sprout-600 text-white px-5 pt-8 pb-7 rounded-b-[2rem] shadow-md">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
             {user.avatarUrl ? (
               <img
                 src={user.avatarUrl}
-                alt={user.name}
+                alt=""
                 className="w-9 h-9 rounded-full border-2 border-white/60 object-cover"
               />
             ) : (
@@ -122,25 +122,25 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
               </div>
             )}
             <div className="min-w-0">
-              <p className="text-xs text-emerald-100 truncate">{user.email}</p>
+              <p className="text-xs text-white/90 truncate">{user.email}</p>
               <p className="text-sm font-bold truncate">{user.name}님 환영합니다!</p>
             </div>
           </div>
           <button
             type="button"
             onClick={() => signOut({ callbackUrl: "/" })}
-            className="min-h-[38px] px-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-semibold flex items-center gap-1"
+            className="min-h-[44px] px-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-semibold flex items-center gap-1"
           >
-            <LogOut className="w-3.5 h-3.5" />
+            <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
             로그아웃
           </button>
         </div>
 
         <h1 className="text-xl font-extrabold flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-amber-300" />
+          <Sparkles className="w-5 h-5 text-amber-300" aria-hidden="true" />
           우리 아기 처음 세팅하기
         </h1>
-        <p className="text-xs text-emerald-50/90 mt-1">
+        <p className="text-sm text-emerald-50 mt-1">
           아기 프로필을 새로 만들거나, 배우자가 공유한 초대 코드로 바로 합류하세요.
         </p>
       </div>
@@ -150,39 +150,41 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
         <div className="grid grid-cols-2 gap-2 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-2xl">
           <button
             type="button"
+            aria-pressed={mode === "CREATE"}
             onClick={() => {
               setMode("CREATE");
               setErrorMsg(null);
             }}
-            className={`min-h-[44px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+            className={`min-h-[44px] rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition-all ${
               mode === "CREATE"
-                ? "bg-white dark:bg-slate-900 text-[#0d8a72] shadow-sm"
+                ? "bg-white dark:bg-slate-900 text-sprout-700 dark:text-sprout-300 shadow-sm"
                 : "text-slate-600 dark:text-slate-400"
             }`}
           >
-            <Baby className="w-4 h-4" />
+            <Baby className="w-4 h-4" aria-hidden="true" />
             새 아기 등록하기
           </button>
           <button
             type="button"
+            aria-pressed={mode === "JOIN"}
             onClick={() => {
               setMode("JOIN");
               setErrorMsg(null);
             }}
-            className={`min-h-[44px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+            className={`min-h-[44px] rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition-all ${
               mode === "JOIN"
-                ? "bg-white dark:bg-slate-900 text-[#0d8a72] shadow-sm"
+                ? "bg-white dark:bg-slate-900 text-sprout-700 dark:text-sprout-300 shadow-sm"
                 : "text-slate-600 dark:text-slate-400"
             }`}
           >
-            <Users className="w-4 h-4" />
+            <Users className="w-4 h-4" aria-hidden="true" />
             초대 코드로 합류
           </button>
         </div>
       </div>
 
       {errorMsg && (
-        <div className="mx-5 mt-4 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-300">
+        <div role="alert" className="mx-5 mt-4 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-sm font-semibold text-rose-700 dark:text-rose-300">
           {errorMsg}
         </div>
       )}
@@ -193,32 +195,34 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
           <form onSubmit={handleCreateSubmit} className="space-y-4">
             <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200/80 dark:border-slate-800 space-y-3.5 shadow-sm">
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label htmlFor="onboarding-field-1" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   가족 공간 이름
                 </label>
                 <input
+                  id="onboarding-field-1"
                   type="text"
                   required
                   value={householdName}
                   onChange={(e) => setHouseholdName(e.target.value)}
                   placeholder="예: 튼튼이네 가족"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <p id="onboarding-field-2" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   나의 양육자 호칭
-                </label>
-                <div className="grid grid-cols-4 gap-2">
+                </p>
+                <div role="group" aria-labelledby="onboarding-field-2" className="grid grid-cols-4 gap-2">
                   {["엄마", "아빠", "할머니", "돌봄이"].map((label) => (
                     <button
                       key={label}
                       type="button"
+                      aria-pressed={relationLabel === label}
                       onClick={() => setRelationLabel(label)}
-                      className={`min-h-[40px] rounded-xl text-xs font-bold border transition-colors ${
+                      className={`min-h-[44px] rounded-xl text-sm font-bold border transition-colors ${
                         relationLabel === label
-                          ? "bg-[#0d8a72] text-white border-[#0d8a72]"
+                          ? "bg-sprout-600 text-white border-sprout-600"
                           : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
                       }`}
                     >
@@ -231,58 +235,62 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
 
             <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200/80 dark:border-slate-800 space-y-3.5 shadow-sm">
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label htmlFor="onboarding-field-3" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   아기 이름 또는 태명 <span className="text-rose-500">*</span>
                 </label>
                 <input
+                  id="onboarding-field-3"
                   type="text"
                   required
                   value={babyName}
                   onChange={(e) => setBabyName(e.target.value)}
                   placeholder="예: 김하준 (튼튼이)"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label htmlFor="onboarding-field-4" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     생년월일 <span className="text-rose-500">*</span>
                   </label>
                   <input
+                  id="onboarding-field-4"
                     type="date"
                     required
                     value={birthDate}
                     onChange={(e) => setBirthDate(e.target.value)}
-                    className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                    className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <p id="onboarding-field-5" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     성별
-                  </label>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  </p>
+                  <div role="group" aria-labelledby="onboarding-field-5" className="grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
+                      aria-pressed={gender === "M"}
                       onClick={() => setGender("M")}
-                      className={`min-h-[44px] rounded-xl text-xs font-bold border ${
+                      className={`min-h-[44px] rounded-xl text-sm font-bold border ${
                         gender === "M"
-                          ? "bg-sky-500 text-white border-sky-500"
+                          ? "bg-sprout-600 text-white border-sprout-600"
                           : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
                       }`}
                     >
-                      남아 👦
+                      남아
                     </button>
                     <button
                       type="button"
+                      aria-pressed={gender === "F"}
                       onClick={() => setGender("F")}
-                      className={`min-h-[44px] rounded-xl text-xs font-bold border ${
+                      className={`min-h-[44px] rounded-xl text-sm font-bold border ${
                         gender === "F"
-                          ? "bg-rose-400 text-white border-rose-400"
+                          ? "bg-sprout-600 text-white border-sprout-600"
                           : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
                       }`}
                     >
-                      여아 👧
+                      여아
                     </button>
                   </div>
                 </div>
@@ -290,55 +298,59 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label htmlFor="onboarding-field-6" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     출산예정일 (선택)
                   </label>
                   <input
+                  id="onboarding-field-6"
                     type="date"
                     value={dueDate}
                     onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                    className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label htmlFor="onboarding-field-7" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     혈액형 (선택)
                   </label>
                   <input
+                  id="onboarding-field-7"
                     type="text"
                     value={bloodType}
                     onChange={(e) => setBloodType(e.target.value)}
                     placeholder="예: A+"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label htmlFor="onboarding-field-8" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     현재 몸무게 (kg, 선택)
                   </label>
                   <input
+                  id="onboarding-field-8"
                     type="number"
                     step="0.01"
                     value={weightKg}
                     onChange={(e) => setWeightKg(e.target.value)}
                     placeholder="예: 3.4"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label htmlFor="onboarding-field-9" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                     현재 키 (cm, 선택)
                   </label>
                   <input
+                  id="onboarding-field-9"
                     type="number"
                     step="0.1"
                     value={heightCm}
                     onChange={(e) => setHeightCm(e.target.value)}
                     placeholder="예: 50.5"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-sprout-600"
                   />
                 </div>
               </div>
@@ -347,9 +359,9 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full min-h-[52px] rounded-2xl bg-[#0d8a72] hover:bg-[#0b7460] text-white font-bold text-sm shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
+              className="w-full min-h-[52px] rounded-2xl bg-sprout-600 hover:bg-sprout-700 text-white font-bold text-sm shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
             >
-              <Check className="w-5 h-5" />
+              <Check className="w-5 h-5" aria-hidden="true" />
               {isSubmitting ? "DB에 저장하는 중..." : "세팅 완료하고 베베로그 시작하기"}
             </button>
           </form>
@@ -357,33 +369,35 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
           <form onSubmit={handleJoinSubmit} className="space-y-4">
             <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200/80 dark:border-slate-800 space-y-4 shadow-sm">
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label htmlFor="onboarding-field-10" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   가족 초대 코드 (6자리)
                 </label>
                 <input
+                  id="onboarding-field-10"
                   type="text"
                   required
                   value={inviteCode}
                   onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
                   placeholder="예: A7K9P2"
                   maxLength={12}
-                  className="w-full min-h-[48px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base font-mono font-bold tracking-widest uppercase focus:outline-none focus:ring-2 focus:ring-[#0d8a72]"
+                  className="w-full min-h-[48px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base font-mono font-bold tracking-widest uppercase focus:outline-none focus:ring-2 focus:ring-sprout-600"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <p id="onboarding-field-11" className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   나의 양육자 호칭
-                </label>
-                <div className="grid grid-cols-4 gap-2">
+                </p>
+                <div role="group" aria-labelledby="onboarding-field-11" className="grid grid-cols-4 gap-2">
                   {["아빠", "엄마", "할머니", "돌봄이"].map((label) => (
                     <button
                       key={label}
                       type="button"
+                      aria-pressed={joinRelation === label}
                       onClick={() => setJoinRelation(label)}
-                      className={`min-h-[40px] rounded-xl text-xs font-bold border transition-colors ${
+                      className={`min-h-[44px] rounded-xl text-sm font-bold border transition-colors ${
                         joinRelation === label
-                          ? "bg-[#0d8a72] text-white border-[#0d8a72]"
+                          ? "bg-sprout-600 text-white border-sprout-600"
                           : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
                       }`}
                     >
@@ -397,9 +411,9 @@ export function OnboardingSetup({ user, onComplete }: OnboardingSetupProps) {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full min-h-[52px] rounded-2xl bg-[#0d8a72] hover:bg-[#0b7460] text-white font-bold text-sm shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
+              className="w-full min-h-[52px] rounded-2xl bg-sprout-600 hover:bg-sprout-700 text-white font-bold text-sm shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
             >
-              <Users className="w-5 h-5" />
+              <Users className="w-5 h-5" aria-hidden="true" />
               {isSubmitting ? "가족 공간에 연결 중..." : "초대 코드로 합류하기"}
             </button>
           </form>

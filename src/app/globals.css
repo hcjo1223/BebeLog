@@ -6,13 +6,75 @@
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
-    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
-    @apply bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-orange-200 dark:selection:bg-orange-900;
+    @apply bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-sprout-200 dark:selection:bg-sprout-800;
     word-break: keep-all;
     overflow-wrap: break-word;
+  }
+
+  /* 키보드 사용자를 위한 포커스 표시 (터치 시에는 나타나지 않음) */
+  :focus-visible {
+    outline: 2px solid #0b7d67;
+    outline-offset: 2px;
+  }
+  .dark :focus-visible {
+    outline-color: #6ee7bf;
+  }
+
+  button,
+  [role="button"],
+  summary {
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  /* 기본 액션 버튼 (최소 48px 터치 영역) */
+  .btn-primary {
+    @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-sprout-600 px-4 text-sm font-bold text-white shadow-sm transition-colors duration-150 hover:bg-sprout-700 active:bg-sprout-800 disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 transition-colors duration-150 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-night-800 dark:text-slate-100 dark:hover:bg-slate-700 dark:active:bg-slate-600;
+  }
+
+  /* 선택형 칩 (라디오/토글). aria-pressed 또는 aria-checked로 선택 상태 표현 */
+  .chip {
+    @apply inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition-colors duration-150 active:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:active:bg-slate-700;
+  }
+  .chip[aria-pressed="true"],
+  .chip[aria-checked="true"] {
+    @apply border-sprout-600 bg-sprout-600 text-white dark:border-sprout-400 dark:bg-sprout-600;
+  }
+
+  /* 입력 필드: iOS 자동 확대를 막기 위해 16px 글자 크기 사용 */
+  .field {
+    @apply min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500;
+  }
+  .field-label {
+    @apply mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200;
+  }
+  .field-error {
+    @apply mt-1.5 text-sm font-medium text-rose-600 dark:text-rose-400;
+  }
+
+  /* 44px 이상 터치 영역을 갖는 아이콘 버튼 */
+  .icon-btn {
+    @apply inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors duration-150;
+  }
+
+  .card {
+    @apply rounded-2xl border border-slate-200 bg-slate-50 dark:border-slate-700/70 dark:bg-night-800;
+  }
+
+  .text-muted {
+    @apply text-slate-600 dark:text-slate-400;
   }
 }
 
@@ -23,4 +85,24 @@
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* 노치/홈 인디케이터 안전 영역 */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 동작 줄이기 설정을 켠 사용자에게는 애니메이션을 최소화 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,50 +1,15 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  Sun,
-  Moon,
-  Droplets,
-  Sparkles,
-  Thermometer,
-  Pill,
-  Bath,
-  Timer,
-  Play,
-  Pause,
-  Square,
-  Plus,
-  Check,
-  Calendar as CalendarIcon,
-  BarChart3,
-  BookOpen,
-  Settings,
-  MonitorSmartphone,
-  StickyNote,
-  Scale,
-  Ruler,
-  Award,
-  Trash2,
-  Eye,
-  Lock,
-  Server,
-  ShieldCheck,
-  Users,
-  Copy,
-  LogOut,
-  X,
-} from "lucide-react";
+import { CircleAlert, CircleCheck, CloudOff, Plus, RefreshCw, X } from "lucide-react";
 import {
   ActivityCategory,
   ActivityRecord,
   BabyProfile,
   BASE_NOW_MS,
   DiaryItem,
+  DiaryPhoto,
   GrowthItem,
   INITIAL_ACTIVITIES,
   INITIAL_BABIES,
@@ -52,427 +17,495 @@ import {
   INITIAL_GROWTH_RECORDS,
   RunningTimer,
 } from "@/lib/mock-data";
+import { addDaysToKey, calculateAgeInfo, toDateKey } from "@/lib/format";
+import {
+  buildDaySlots,
+  computeDailySummary,
+  computeTimerSeconds,
+  findLatestByCategory,
+  getFeedingKind,
+  groupActivitiesByPeriod,
+} from "@/lib/summary";
+import {
+  DEFAULT_QUICK_FORM,
+  buildQuickActivity,
+  buildTimerActivity,
+  isLocalId,
+  newLocalId,
+  type QuickActivityForm,
+} from "@/lib/activity-builders";
+import { useWakeLock } from "@/hooks/useWakeLock";
 import { AuthGate } from "@/components/AuthGate";
 import { OnboardingSetup } from "@/components/OnboardingSetup";
+import { AppHeader } from "@/components/AppHeader";
+import { BottomNav, TAB_TITLES, type ActiveTab } from "@/components/BottomNav";
+import { HomeTab } from "@/components/tabs/HomeTab";
+import { CalendarTab } from "@/components/tabs/CalendarTab";
+import { ReportsTab } from "@/components/tabs/ReportsTab";
+import { NurseryTab } from "@/components/tabs/NurseryTab";
+import { DiaryTab } from "@/components/tabs/DiaryTab";
+import { ActivitySheet } from "@/components/sheets/ActivitySheet";
+import { DiarySheet, type DiaryFormValues } from "@/components/sheets/DiarySheet";
+import { GrowthSheet, type GrowthFormValues } from "@/components/sheets/GrowthSheet";
+import { AddBabySheet, type NewBabyValues } from "@/components/sheets/AddBabySheet";
+import { AccountSheet, type AuthUserInfo, type HouseholdInfo } from "@/components/sheets/AccountSheet";
 
-type ActiveTab = "HOME" | "CALENDAR" | "REPORTS" | "NURSERY" | "DIARY";
 type AuthPhase = "LOADING" | "UNAUTHENTICATED" | "ONBOARDING" | "READY" | "DEMO";
 
-interface AuthUserInfo {
-  id: string;
-  name: string;
-  email: string;
-  avatarUrl?: string | null;
+type Sheet =
+  | { type: "activity"; category: ActivityCategory | null }
+  | { type: "diary" }
+  | { type: "growth" }
+  | { type: "addBaby" }
+  | { type: "account" }
+  | null;
+
+interface Toast {
+  id: number;
+  tone: "success" | "error";
+  message: string;
+  action?: { label: string; run: () => void };
 }
 
-interface HouseholdInfo {
-  id: string;
-  name: string;
-  inviteCode: string;
-  myRelationLabel: string;
-  myRole: string;
-  members: {
-    id: string;
-    relationLabel: string;
-    role: string;
-    name: string;
-    avatarUrl?: string | null;
-  }[];
-}
+// 가족 기기 간 동기화 주기
+const TIMER_POLL_MS = 10_000;
+const DATA_REFRESH_MS = 60_000;
+const TOAST_MS = 6_000;
 
-// 생후 일수(D+Day), 주수(weeks), 개월 수 계산 유틸리티 (Sprout Track 헤더 스타일)
-function calculateAgeInfo(birthDateStr: string, dueDateStr: string | undefined, nowMs: number) {
-  const birth = new Date(birthDateStr);
-  const today = new Date(nowMs);
-  const diffDays = Math.max(
-    1,
-    Math.floor((today.getTime() - birth.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  );
-  const weeks = Math.floor(diffDays / 7);
-  const months = Math.floor(diffDays / 30);
-  const remainDays = diffDays % 30;
-
-  let correctedDays: number | null = null;
-  if (dueDateStr) {
-    const due = new Date(dueDateStr);
-    correctedDays = Math.floor(
-      (today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24)
-    ) + 1;
+const readPref = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
   }
+};
+const writePref = (key: string, value: string) => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // 사생활 보호 모드 등에서는 저장하지 않는다
+  }
+};
 
-  return { diffDays, weeks, months, remainDays, correctedDays };
-}
-
-// Sprout Track 원형 타일 상단 상태 버블용 HH:MM 포맷 ("2:31")
-function formatBubbleDuration(isoDate: string | undefined, nowMs: number) {
-  if (!isoDate) return "0:00";
-  const diffMin = Math.max(
-    1,
-    Math.floor((nowMs - new Date(isoDate).getTime()) / 60000)
-  );
-  const h = Math.floor(diffMin / 60);
-  const m = diffMin % 60;
-  return `${h}:${String(m).padStart(2, "0")}`;
-}
-
-// 한국어 경과 시간 ("2시간 31분 전")
-function formatElapsedKo(isoDate: string, nowMs: number) {
-  const diffMin = Math.max(
-    1,
-    Math.floor((nowMs - new Date(isoDate).getTime()) / 60000)
-  );
-  if (diffMin < 60) return `${diffMin}분 전`;
-  const h = Math.floor(diffMin / 60);
-  const m = diffMin % 60;
-  return m > 0 ? `${h}시간 ${m}분 전` : `${h}시간 전`;
-}
-
-// 초 단위를 MM:SS 또는 HH:MM:SS로 변환
-function formatTimerSec(totalSec: number) {
-  const hrs = Math.floor(totalSec / 3600);
-  const mins = Math.floor((totalSec % 3600) / 60);
-  const secs = totalSec % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return hrs > 0
-    ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}`
-    : `${pad(mins)}:${pad(secs)}`;
-}
-
-// 시간대(오전 / 오후 / 밤·새벽) 분류 함수 (Sprout Track 타임라인 그룹핑)
-function getTimePeriodLabel(isoDate: string): "오전 (Morning)" | "오후 (Afternoon)" | "밤·새벽 (Night)" {
-  const hour = new Date(isoDate).getHours();
-  if (hour >= 6 && hour < 12) return "오전 (Morning)";
-  if (hour >= 12 && hour < 19) return "오후 (Afternoon)";
-  return "밤·새벽 (Night)";
-}
-
-// SSR과 iOS Safari(WebKit) 간 toLocaleTimeString 공백/유니코드 불일치로 인한
-// Hydration Error를 방지하기 위한 결정론적 한국어 시각 포맷터 ("오후 8:35")
-function formatKoreanTime(isoDate: string): string {
-  const d = new Date(isoDate);
-  const h = d.getHours();
-  const m = String(d.getMinutes()).padStart(2, "0");
-  const period = h < 12 ? "오전" : "오후";
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${period} ${hour12}:${m}`;
-}
-
-export default function SproutTrackKoreanApp() {
-  // 인증 및 DB 부트스트랩 상태
+export default function BebeLogApp() {
+  // 인증 및 초기 데이터 상태
   const [authPhase, setAuthPhase] = useState<AuthPhase>("LOADING");
-  const [googleConfigured, setGoogleConfigured] = useState<boolean>(false);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
+  const [mediaConfigured, setMediaConfigured] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUserInfo | null>(null);
   const [household, setHousehold] = useState<HouseholdInfo | null>(null);
-  const [showAccountModal, setShowAccountModal] = useState(false);
-  const [copiedInvite, setCopiedInvite] = useState(false);
 
-  // 다크 모드 상태 (Sprout Track Deep Navy 테마: #111827)
   const [darkMode, setDarkMode] = useState(false);
-  // 현재 활성화된 하단 탭
   const [activeTab, setActiveTab] = useState<ActiveTab>("HOME");
-
-  // 아이 프로필 및 다둥이 선택 상태
-  const [babies, setBabies] = useState<BabyProfile[]>(INITIAL_BABIES);
-  const [selectedBabyId, setSelectedBabyId] = useState<string>(INITIAL_BABIES[0].id);
-  const [showBabySelector, setShowBabySelector] = useState(false);
-
-  // 공동 양육자(Caretaker) 호칭 상태
-  const [currentCaregiver, setCurrentCaregiver] = useState<string>("엄마");
-
-  // 일일 요약(Daily Summary) 접기/펼치기 및 24시간 히트맵 토글
-  const [summaryExpanded, setSummaryExpanded] = useState(true);
-  const [showHeatmap, setShowHeatmap] = useState(false);
-
-  // 육아 기록, 일기, 성장 기록 데이터 상태
-  const [activities, setActivities] = useState<ActivityRecord[]>(INITIAL_ACTIVITIES);
-  const [diaries, setDiaries] = useState<DiaryItem[]>(INITIAL_DIARIES);
-  const [growthRecords, setGrowthRecords] = useState<GrowthItem[]>(INITIAL_GROWTH_RECORDS);
-
-  // 실시간 작동 타이머 (SSR/CSR 초기 Hydration 일치를 위해 BASE_NOW_MS로 초기화 후 마운트 시 동기화)
-  const [runningTimer, setRunningTimer] = useState<RunningTimer | null>(null);
-  const [nowMs, setNowMs] = useState<number>(BASE_NOW_MS);
-
-  // 수유방 모드(Nursery Mode) 배경 색조(Hue) 및 밝기(Dim) 상태
-  const [nurseryHue, setNurseryHue] = useState<number>(178); // 기본 Sprout Teal 색조
-  const [nurseryDim, setNurseryDim] = useState<number>(15);  // 화면 어둡기 (0 ~ 70%)
-  const [wakeLockActive, setWakeLockActive] = useState<boolean>(true);
-
-  // 성장 리포트 탭 선택 (몸무게 | 키 | 머리둘레)
-  const [growthChartMetric, setGrowthChartMetric] = useState<"WEIGHT" | "HEIGHT" | "HEAD">("WEIGHT");
-
-  // 원형 타일 클릭 시 열리는 바텀 시트 모달 상태
-  const [sheetCategory, setSheetCategory] = useState<ActivityCategory | null>(null);
-  const [feedingType, setFeedingType] = useState<"FORMULA" | "BREAST" | "SOLID_FOOD">("FORMULA");
-  const [formulaMl, setFormulaMl] = useState<number>(160);
-  const [breastSide, setBreastSide] = useState<"LEFT" | "RIGHT" | "BOTH">("RIGHT");
-  const [breastMinutes, setBreastMinutes] = useState<number>(15);
-  const [diaperType, setDiaperType] = useState<"WET" | "SOLID" | "BOTH">("WET");
-  const [stoolColor, setStoolColor] = useState<"YELLOW" | "BROWN" | "GREEN">("YELLOW");
-  const [sleepMinutes, setSleepMinutes] = useState<number>(80);
-  const [tempValue, setTempValue] = useState<number>(36.6);
-  const [quickNote, setQuickNote] = useState<string>("");
-
-  // 육아일기 모달 상태
-  const [showDiaryModal, setShowDiaryModal] = useState(false);
-  const [diaryTitle, setDiaryTitle] = useState("");
-  const [diaryContent, setDiaryContent] = useState("");
-  const [diaryMood, setDiaryMood] = useState("🥰");
-  const [diaryTags, setDiaryTags] = useState("첫뒤집기, 폭풍성장");
-  const [diaryMilestone, setDiaryMilestone] = useState(false);
-
-  // 성장 기록 모달 상태
-  const [showGrowthModal, setShowGrowthModal] = useState(false);
-  const [newWeight, setNewWeight] = useState("6.5");
-  const [newHeight, setNewHeight] = useState("63.0");
-  const [newHead, setNewHead] = useState("41.0");
-  const [newGrowthNote, setNewGrowthNote] = useState("");
-
-  // 삭제 실행 취소(Undo) 및 오프라인 배너 상태
-  const [deletedActivityBackup, setDeletedActivityBackup] =
-    useState<ActivityRecord | null>(null);
+  const [sheet, setSheet] = useState<Sheet>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [isOffline, setIsOffline] = useState(false);
 
-  // 다크 모드 HTML 클래스 동기화
+  const [babies, setBabies] = useState<BabyProfile[]>(INITIAL_BABIES);
+  const [selectedBabyId, setSelectedBabyId] = useState<string>(INITIAL_BABIES[0].id);
+  const [currentCaregiver, setCurrentCaregiver] = useState("엄마");
+
+  const [activities, setActivities] = useState<ActivityRecord[]>([]);
+  const [diaries, setDiaries] = useState<DiaryItem[]>([]);
+  const [growthRecords, setGrowthRecords] = useState<GrowthItem[]>([]);
+  const [uploadingDiaryIds, setUploadingDiaryIds] = useState<ReadonlySet<string>>(new Set());
+
+  // SSR/CSR 초기 Hydration 일치를 위해 고정 시각으로 시작한 뒤 마운트 시 동기화
+  const [nowMs, setNowMs] = useState<number>(BASE_NOW_MS);
+  const [runningTimer, setRunningTimer] = useState<RunningTimer | null>(null);
+  // null이면 항상 "오늘"을 따라간다
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  // 수유방 모드 화면 설정
+  const [nurseryHue, setNurseryHue] = useState(178);
+  const [nurseryDim, setNurseryDim] = useState(15);
+  const [keepAwake, setKeepAwake] = useState(true);
+
+  // 비동기 콜백에서 최신 값을 읽기 위한 ref
+  const authPhaseRef = useRef(authPhase);
+  authPhaseRef.current = authPhase;
+  const selectedBabyIdRef = useRef(selectedBabyId);
+  selectedBabyIdRef.current = selectedBabyId;
+  const activitiesRef = useRef(activities);
+  activitiesRef.current = activities;
+  const runningTimerRef = useRef(runningTimer);
+  runningTimerRef.current = runningTimer;
+  const syncingIdsRef = useRef(new Set<string>());
+  const discardedLocalIdsRef = useRef(new Set<string>());
+  const lastTimerMutationRef = useRef(0);
+  const lastRefreshRef = useRef(0);
+  const toastSeqRef = useRef(0);
+
+  const showToast = useCallback((next: Omit<Toast, "id">) => {
+    toastSeqRef.current += 1;
+    setToast({ ...next, id: toastSeqRef.current });
+  }, []);
+
+  // 토스트 자동 닫힘
   useEffect(() => {
-    const root = document.documentElement;
-    if (darkMode) {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
+    if (!toast) return;
+    const timeout = setTimeout(() => setToast((t) => (t?.id === toast.id ? null : t)), TOAST_MS);
+    return () => clearTimeout(timeout);
+  }, [toast]);
+
+  // 화면 설정 복원 (다크 모드는 시스템 설정을 기본값으로)
+  useEffect(() => {
+    const savedTheme = readPref("bebelog-theme");
+    setDarkMode(
+      savedTheme ? savedTheme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches
+    );
+    const hue = Number(readPref("bebelog-nursery-hue"));
+    const dim = Number(readPref("bebelog-nursery-dim"));
+    if (readPref("bebelog-nursery-hue") !== null && Number.isFinite(hue)) setNurseryHue(hue);
+    if (readPref("bebelog-nursery-dim") !== null && Number.isFinite(dim)) setNurseryDim(dim);
+    if (readPref("bebelog-keep-awake") === "off") setKeepAwake(false);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
 
-  // 온라인/오프라인 상태 감지
+  // 시계 갱신: 타이머가 돌 때만 1초 주기, 그 외에는 15초 주기로 리렌더를 줄인다
+  const timerTicking = runningTimer !== null && !runningTimer.isPaused;
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    setNowMs(Date.now());
+    const interval = setInterval(() => setNowMs(Date.now()), timerTicking ? 1000 : 15_000);
+    return () => clearInterval(interval);
+  }, [timerTicking]);
+
+  // ---------------------------------------------------------------------
+  // 서버 데이터 로드
+  // ---------------------------------------------------------------------
+  const loadBootstrap = useCallback(
+    async (babyIdParam?: string, options: { silent?: boolean } = {}) => {
+      const { silent = false } = options;
+      try {
+        const url = babyIdParam
+          ? `/api/bootstrap?babyId=${encodeURIComponent(babyIdParam)}`
+          : "/api/bootstrap";
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) {
+          // 백그라운드 새로고침 실패(오프라인 등)로 로그인 화면으로 튕기지 않게 한다
+          if (!silent) setAuthPhase("UNAUTHENTICATED");
+          return;
+        }
+        const data = await res.json();
+        setGoogleConfigured(Boolean(data.googleConfigured));
+
+        if (!data.authenticated) {
+          setAuthPhase("UNAUTHENTICATED");
+          return;
+        }
+
+        setAuthUser(data.user);
+        if (data.needsOnboarding) {
+          setAuthPhase("ONBOARDING");
+          return;
+        }
+
+        // 백그라운드 새로고침 도중 사용자가 다른 아이로 전환했다면 결과를 버린다
+        if (silent && babyIdParam && selectedBabyIdRef.current !== babyIdParam) return;
+
+        const activeBabyId: string = data.activeBabyId || data.babies?.[0]?.id;
+        setHousehold(data.household);
+        setMediaConfigured(Boolean(data.mediaConfigured));
+        if (data.household?.myRelationLabel) {
+          setCurrentCaregiver(data.household.myRelationLabel);
+        }
+        if (Array.isArray(data.babies) && data.babies.length > 0) {
+          setBabies(data.babies);
+          setSelectedBabyId(activeBabyId);
+        }
+        // 아직 서버에 올라가지 않은 로컬 기록은 유지한다
+        const serverActivities: ActivityRecord[] = data.activities || [];
+        setActivities((prev) => [
+          ...prev.filter((a) => isLocalId(a.id) && a.babyId === activeBabyId),
+          ...serverActivities,
+        ]);
+        setGrowthRecords(data.growthRecords || []);
+        setDiaries(data.diaryEntries || []);
+        if (Date.now() - lastTimerMutationRef.current > 4000) {
+          setRunningTimer(data.activeTimer || null);
+        }
+        lastRefreshRef.current = Date.now();
+        setAuthPhase("READY");
+      } catch {
+        if (!silent) setAuthPhase("UNAUTHENTICATED");
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    void loadBootstrap();
+  }, [loadBootstrap]);
+
+  // ---------------------------------------------------------------------
+  // 활동 기록 저장 / 오프라인 재전송
+  // ---------------------------------------------------------------------
+  const sendActivity = useCallback(
+    async (record: ActivityRecord) => {
+      if (syncingIdsRef.current.has(record.id)) return;
+      syncingIdsRef.current.add(record.id);
+      try {
+        const res = await fetch("/api/activities", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            babyId: record.babyId,
+            category: record.category,
+            startedAt: record.startedAt,
+            endedAt: record.endedAt,
+            durationSec: record.durationSec,
+            amountMl: record.amountMl,
+            valueNum: record.valueNum,
+            details: record.details,
+            note: record.note,
+            summaryTitle: record.summaryTitle,
+            subDetail: record.subDetail,
+            recordedByLabel: record.recordedBy,
+          }),
+        });
+
+        if (res.ok) {
+          const json = await res.json();
+          const saved: ActivityRecord | undefined = json.data;
+          if (!saved) return;
+          if (discardedLocalIdsRef.current.delete(record.id)) {
+            // 전송 중에 사용자가 삭제한 기록은 서버에서도 지운다
+            void fetch(`/api/activities/${encodeURIComponent(saved.id)}`, { method: "DELETE" }).catch(() => {});
+            return;
+          }
+          setActivities((prev) => prev.map((item) => (item.id === record.id ? saved : item)));
+          return;
+        }
+
+        if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+          // 다시 보내도 실패하는 요청: 화면에서 내리고 알린다
+          setActivities((prev) => prev.filter((item) => item.id !== record.id));
+          showToast({
+            tone: "error",
+            message:
+              res.status === 401
+                ? "로그인이 만료되어 저장하지 못했습니다. 다시 로그인해 주세요."
+                : `'${record.summaryTitle}' 기록을 저장하지 못했습니다.`,
+          });
+        }
+        // 5xx는 대기 상태로 두고 다음 동기화 때 다시 보낸다
+      } catch {
+        // 네트워크 오류: 대기 상태 유지
+      } finally {
+        syncingIdsRef.current.delete(record.id);
+      }
+    },
+    [showToast]
+  );
+
+  const syncPending = useCallback(() => {
+    if (authPhaseRef.current !== "READY") return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    activitiesRef.current.filter((a) => isLocalId(a.id)).forEach((a) => void sendActivity(a));
+  }, [sendActivity]);
+
+  const persistActivity = useCallback(
+    (record: ActivityRecord) => {
+      setActivities((prev) => [record, ...prev]);
+      if (authPhaseRef.current === "READY") void sendActivity(record);
+    },
+    [sendActivity]
+  );
+
+  const removeActivity = useCallback((id: string) => {
+    setActivities((prev) => prev.filter((a) => a.id !== id));
+    if (isLocalId(id)) {
+      if (syncingIdsRef.current.has(id)) discardedLocalIdsRef.current.add(id);
+      return;
+    }
+    if (authPhaseRef.current === "READY") {
+      fetch(`/api/activities/${encodeURIComponent(id)}`, { method: "DELETE" })
+        .then((res) => {
+          if (!res.ok && res.status !== 404) throw new Error(String(res.status));
+        })
+        .catch(() => {
+          showToast({ tone: "error", message: "기록을 삭제하지 못했습니다. 연결 상태를 확인해 주세요." });
+          void loadBootstrap(selectedBabyIdRef.current, { silent: true });
+        });
+    }
+  }, [loadBootstrap, showToast]);
+
+  // 온라인/오프라인 감지, 화면 복귀 시 최신 데이터로 갱신
+  useEffect(() => {
+    const refresh = () => {
+      if (authPhaseRef.current !== "READY") return;
+      syncPending();
+      if (Date.now() - lastRefreshRef.current < 5000) return;
+      lastRefreshRef.current = Date.now();
+      void loadBootstrap(selectedBabyIdRef.current, { silent: true });
+    };
+    const handleOnline = () => {
+      setIsOffline(false);
+      refresh();
+    };
     const handleOffline = () => setIsOffline(true);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        setNowMs(Date.now());
+        refresh();
+      }
+    };
+
+    setIsOffline(navigator.onLine === false);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+    document.addEventListener("visibilitychange", handleVisibility);
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && navigator.onLine !== false) refresh();
+    }, DATA_REFRESH_MS);
+
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      clearInterval(interval);
     };
-  }, []);
+  }, [loadBootstrap, syncPending]);
 
-  // 1초 주기 타이머 갱신 (클라이언트 마운트 직후 실제 현재 시각으로 동기화)
+  // 가족이 다른 기기에서 시작/종료한 타이머를 주기적으로 가져온다
   useEffect(() => {
-    setNowMs(Date.now());
-    const interval = setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
+    if (authPhase !== "READY") return;
+    const babyId = selectedBabyId;
+    let cancelled = false;
 
-  // Google 인증 및 PostgreSQL 초기 데이터 부트스트랩
-  const loadBootstrap = useCallback(async (babyIdParam?: string) => {
-    try {
-      const url = babyIdParam
-        ? `/api/bootstrap?babyId=${encodeURIComponent(babyIdParam)}`
-        : "/api/bootstrap";
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        setAuthPhase("UNAUTHENTICATED");
-        return;
+    const poll = async () => {
+      if (document.visibilityState !== "visible" || navigator.onLine === false) return;
+      const requestedAt = Date.now();
+      try {
+        const res = await fetch(`/api/timers?babyId=${encodeURIComponent(babyId)}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (cancelled || selectedBabyIdRef.current !== babyId) return;
+        // 방금 이 기기에서 조작한 내용이 서버 응답보다 우선한다
+        if (lastTimerMutationRef.current > requestedAt - 4000) return;
+
+        const remote: RunningTimer | null = json.data ?? null;
+        const local = runningTimerRef.current;
+        const same =
+          (!remote && !local) ||
+          (remote !== null &&
+            local !== null &&
+            remote.category === local.category &&
+            remote.isPaused === local.isPaused &&
+            remote.startedAt === local.startedAt &&
+            remote.accumulatedSec === local.accumulatedSec);
+        if (same) return;
+
+        setRunningTimer(remote);
+        if (local && !remote) {
+          // 다른 가족이 타이머를 종료·저장했으므로 타임라인도 갱신한다
+          void loadBootstrap(babyId, { silent: true });
+        }
+      } catch {
+        // 일시적인 네트워크 오류는 다음 주기에 다시 시도
       }
-      const data = await res.json();
-      setGoogleConfigured(Boolean(data.googleConfigured));
+    };
 
-      if (!data.authenticated) {
-        setAuthPhase("UNAUTHENTICATED");
-        return;
-      }
+    const interval = setInterval(poll, TIMER_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [authPhase, selectedBabyId, loadBootstrap]);
 
-      setAuthUser(data.user);
-      if (data.needsOnboarding) {
-        setAuthPhase("ONBOARDING");
-        return;
-      }
-
-      setHousehold(data.household);
-      if (data.household?.myRelationLabel) {
-        setCurrentCaregiver(data.household.myRelationLabel);
-      }
-      if (Array.isArray(data.babies) && data.babies.length > 0) {
-        setBabies(data.babies);
-        setSelectedBabyId(data.activeBabyId || data.babies[0].id);
-      }
-      setActivities(data.activities || []);
-      setGrowthRecords(data.growthRecords || []);
-      setDiaries(data.diaryEntries || []);
-      setRunningTimer(data.activeTimer || null);
-      setAuthPhase("READY");
-    } catch {
-      setAuthPhase("UNAUTHENTICATED");
-    }
-  }, []);
-
-  useEffect(() => {
-    loadBootstrap();
-  }, [loadBootstrap]);
-
+  // ---------------------------------------------------------------------
+  // 파생 데이터
+  // ---------------------------------------------------------------------
   const currentBaby = useMemo(
     () => babies.find((b) => b.id === selectedBabyId) ?? babies[0],
     [babies, selectedBabyId]
   );
+  const todayKey = toDateKey(nowMs);
+  const dayKey = selectedDay && selectedDay < todayKey ? selectedDay : todayKey;
+  // 분 단위로만 바뀌는 값에 의존해 1초마다 재계산되지 않게 한다
+  const nowMinuteMs = Math.floor(nowMs / 60_000) * 60_000;
 
   const ageInfo = useMemo(
-    () => calculateAgeInfo(currentBaby.birthDate, currentBaby.dueDate, nowMs),
-    [currentBaby, nowMs]
+    () => calculateAgeInfo(currentBaby.birthDate, currentBaby.dueDate, nowMinuteMs),
+    [currentBaby, nowMinuteMs]
   );
 
   const babyActivities = useMemo(
-    () =>
-      activities
-        .filter((a) => a.babyId === currentBaby.id)
-        .sort(
-          (a, b) =>
-            new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
-        ),
+    () => activities.filter((a) => a.babyId === currentBaby.id),
     [activities, currentBaby.id]
   );
+  const babyDiaries = useMemo(
+    () => diaries.filter((d) => d.babyId === currentBaby.id),
+    [diaries, currentBaby.id]
+  );
 
-  // Sprout Track 스타일의 정밀 일일 요약(Daily Summary) 집계
-  const dailySummary = useMemo(() => {
-    let totalMl = 0;
-    let bottleCount = 0;
-    let breastCount = 0;
-    let breastRightMin = 0;
-    let breastLeftMin = 0;
-    let totalSleepMin = 0;
-    let wetCount = 0;
-    let poopCount = 0;
-    let medCount = 0;
-    let noteCount = 0;
-    let tummyMin = 19;
-    let tummyCount = 2;
+  const daySummary = useMemo(
+    () => computeDailySummary(babyActivities, dayKey, nowMinuteMs),
+    [babyActivities, dayKey, nowMinuteMs]
+  );
+  const todaySummary = useMemo(
+    () => computeDailySummary(babyActivities, todayKey, nowMinuteMs),
+    [babyActivities, todayKey, nowMinuteMs]
+  );
+  const dayGroups = useMemo(() => groupActivitiesByPeriod(babyActivities, dayKey), [babyActivities, dayKey]);
+  const daySlots = useMemo(() => buildDaySlots(babyActivities, dayKey), [babyActivities, dayKey]);
 
-    babyActivities.forEach((act) => {
-      if (act.category === "FEEDING") {
-        if (act.amountMl) {
-          totalMl += act.amountMl;
-          bottleCount += 1;
-        } else {
-          breastCount += 1;
-          const mins = Math.round((act.durationSec ?? 780) / 60);
-          breastRightMin += Math.ceil(mins / 2);
-          breastLeftMin += Math.floor(mins / 2);
-        }
-      } else if (act.category === "SLEEP") {
-        totalSleepMin += Math.round((act.durationSec ?? 3600) / 60);
-      } else if (act.category === "DIAPER") {
-        if (act.details?.diaperType === "SOLID") {
-          poopCount += 1;
-        } else if (act.details?.diaperType === "BOTH") {
-          wetCount += 1;
-          poopCount += 1;
-        } else {
-          wetCount += 1;
-        }
-      } else if (act.category === "MEDICATION") {
-        medCount += 1;
-      } else if (act.category === "NOTE") {
-        noteCount += 1;
-      } else if (act.category === "TUMMY_TIME") {
-        tummyCount += 1;
-        tummyMin += Math.round((act.durationSec ?? 600) / 60);
-      }
-    });
-
-    const awakeMin = Math.max(60, 14 * 60 - totalSleepMin);
-    const lastFeeding = babyActivities.find((a) => a.category === "FEEDING");
-    const lastSleep = babyActivities.find((a) => a.category === "SLEEP");
-    const lastDiaper = babyActivities.find((a) => a.category === "DIAPER");
-
-    return {
-      totalMl,
-      bottleCount,
-      breastCount,
-      breastRightMin,
-      breastLeftMin,
-      totalSleepMin,
-      awakeMin,
-      wetCount,
-      poopCount,
-      medCount,
-      noteCount,
-      tummyCount,
-      tummyMin,
-      lastFeeding,
-      lastSleep,
-      lastDiaper,
-    };
+  const lastFeeding = useMemo(() => findLatestByCategory(babyActivities, "FEEDING"), [babyActivities]);
+  const lastDiaper = useMemo(() => findLatestByCategory(babyActivities, "DIAPER"), [babyActivities]);
+  const lastSleep = useMemo(() => findLatestByCategory(babyActivities, "SLEEP"), [babyActivities]);
+  const lastFormulaMl = useMemo(() => {
+    let latest: ActivityRecord | undefined;
+    for (const a of babyActivities) {
+      if (a.category !== "FEEDING" || getFeedingKind(a) !== "FORMULA" || !a.amountMl) continue;
+      if (!latest || a.startedAt > latest.startedAt) latest = a;
+    }
+    return latest?.amountMl ?? DEFAULT_QUICK_FORM.formulaMl;
   }, [babyActivities]);
 
-  // 타임라인 시간대별 그룹핑 (오전 / 오후 / 밤·새벽)
-  const groupedActivities = useMemo(() => {
-    const groups: Record<string, ActivityRecord[]> = {
-      "오후 (Afternoon)": [],
-      "오전 (Morning)": [],
-      "밤·새벽 (Night)": [],
-    };
-    babyActivities.forEach((act) => {
-      const label = getTimePeriodLabel(act.startedAt);
-      groups[label].push(act);
-    });
-    return Object.entries(groups).filter(([, list]) => list.length > 0);
-  }, [babyActivities]);
+  const recentActivities = useMemo(() => {
+    const since = nowMinuteMs - 7 * 24 * 60 * 60 * 1000;
+    return babyActivities.filter((a) => new Date(a.startedAt).getTime() >= since);
+  }, [babyActivities, nowMinuteMs]);
 
-  // 타이머 경과 시간(초)
-  const activeTimerSeconds = useMemo(() => {
-    if (!runningTimer) return 0;
-    if (runningTimer.isPaused) return runningTimer.accumulatedSec;
-    const elapsed = Math.max(
-      0,
-      Math.floor((nowMs - runningTimer.startedAt) / 1000)
-    );
-    return runningTimer.accumulatedSec + elapsed;
-  }, [runningTimer, nowMs]);
+  const pendingCount = authPhase === "READY" ? activities.filter((a) => isLocalId(a.id)).length : 0;
+  const timerSeconds = computeTimerSeconds(runningTimer, nowMs);
+  const wakeLockStatus = useWakeLock(
+    activeTab === "NURSERY" && keepAwake && (authPhase === "READY" || authPhase === "DEMO")
+  );
 
-  // 공통 활동 기록 DB 저장 헬퍼 (READY 모드일 때 PostgreSQL에 영구 저장)
-  const persistActivity = async (newRecord: ActivityRecord) => {
-    setActivities((prev) => [newRecord, ...prev]);
-    if (authPhase !== "READY") return;
-
-    try {
-      const res = await fetch("/api/activities", {
+  // ---------------------------------------------------------------------
+  // 타이머
+  // ---------------------------------------------------------------------
+  const pushTimer = useCallback(
+    (body: Record<string, unknown>) => {
+      if (authPhaseRef.current !== "READY") return;
+      fetch("/api/timers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          babyId: newRecord.babyId,
-          category: newRecord.category,
-          startedAt: newRecord.startedAt,
-          endedAt: newRecord.endedAt,
-          durationSec: newRecord.durationSec,
-          amountMl: newRecord.amountMl,
-          valueNum: newRecord.valueNum,
-          details: newRecord.details,
-          note: newRecord.note,
-          summaryTitle: newRecord.summaryTitle,
-          subDetail: newRecord.subDetail,
-          recordedByLabel: newRecord.recordedBy,
-        }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) {
-          setActivities((prev) =>
-            prev.map((item) => (item.id === newRecord.id ? json.data : item))
-          );
-        }
-      }
-    } catch (err) {
-      console.error("[persistActivity] DB 저장 실패:", err);
-    }
-  };
+        body: JSON.stringify(body),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+        })
+        .catch(() => {
+          showToast({
+            tone: "error",
+            message: "타이머를 가족과 공유하지 못했습니다. 이 기기에서는 계속 진행됩니다.",
+          });
+        });
+    },
+    [showToast]
+  );
 
-  // 타이머 시작
-  const handleStartTimer = async (
-    category: RunningTimer["category"],
-    label: string
-  ) => {
+  const handleStartTimer = (category: RunningTimer["category"], label: string) => {
+    if (runningTimerRef.current) return;
     const startedAt = Date.now();
+    lastTimerMutationRef.current = startedAt;
     setRunningTimer({
-      id: `timer-${startedAt}`,
+      id: newLocalId(startedAt),
       category,
       label,
       startedAt,
@@ -480,470 +513,351 @@ export default function SproutTrackKoreanApp() {
       isPaused: false,
       accumulatedSec: 0,
     });
-    if (authPhase === "READY") {
-      fetch("/api/timers", {
+    setNowMs(startedAt);
+    pushTimer({ babyId: currentBaby.id, category, label, status: "RUNNING", startedAt, accumulatedSec: 0 });
+  };
+
+  const handleTogglePauseTimer = () => {
+    const timer = runningTimerRef.current;
+    if (!timer) return;
+    const now = Date.now();
+    lastTimerMutationRef.current = now;
+    const next: RunningTimer = timer.isPaused
+      ? { ...timer, startedAt: now, isPaused: false }
+      : { ...timer, isPaused: true, accumulatedSec: computeTimerSeconds(timer, now) };
+    setRunningTimer(next);
+    setNowMs(now);
+    pushTimer({
+      babyId: currentBaby.id,
+      category: next.category,
+      label: next.label,
+      status: next.isPaused ? "PAUSED" : "RUNNING",
+      startedAt: next.startedAt,
+      accumulatedSec: next.accumulatedSec,
+    });
+  };
+
+  const handleStopAndSaveTimer = () => {
+    const timer = runningTimerRef.current;
+    if (!timer) return;
+    const now = Date.now();
+    lastTimerMutationRef.current = now;
+    const record = buildTimerActivity(timer, computeTimerSeconds(timer, now), {
+      id: newLocalId(now),
+      babyId: currentBaby.id,
+      caregiver: currentCaregiver,
+      nowMs: now,
+    });
+
+    if (authPhaseRef.current === "READY") {
+      fetch(`/api/timers?babyId=${encodeURIComponent(currentBaby.id)}`, { method: "DELETE" }).catch(() => {});
+    }
+    setRunningTimer(null);
+    persistActivity(record);
+    showToast({ tone: "success", message: `${record.summaryTitle} 기록을 저장했습니다.` });
+  };
+
+  // ---------------------------------------------------------------------
+  // 기록 추가 / 삭제
+  // ---------------------------------------------------------------------
+  const addActivityFromForm = (form: QuickActivityForm, options: { undoable?: boolean } = {}) => {
+    const now = Date.now();
+    const record = buildQuickActivity(form, {
+      id: newLocalId(now),
+      babyId: currentBaby.id,
+      caregiver: currentCaregiver,
+      nowMs: now,
+    });
+    persistActivity(record);
+    showToast({
+      tone: "success",
+      message: `${record.summaryTitle} 기록을 저장했습니다.`,
+      action: options.undoable
+        ? {
+            label: "취소",
+            run: () => {
+              // 저장 후 서버 ID로 바뀌었을 수 있으므로 내용으로 다시 찾는다
+              const current = activitiesRef.current.find(
+                (a) => a.id === record.id || (a.startedAt === record.startedAt && a.summaryTitle === record.summaryTitle && a.babyId === record.babyId)
+              );
+              if (current) removeActivity(current.id);
+              setToast(null);
+            },
+          }
+        : undefined,
+    });
+  };
+
+  const handleSaveSheetActivity = (form: QuickActivityForm) => {
+    setSheet(null);
+    addActivityFromForm(form);
+    // 지난 날짜를 보고 있었다면 방금 기록이 보이도록 오늘로 돌아온다
+    setSelectedDay(null);
+  };
+
+  const handleDeleteActivity = (id: string) => {
+    const target = activitiesRef.current.find((a) => a.id === id);
+    if (!target) return;
+    removeActivity(id);
+    showToast({
+      tone: "success",
+      message: `'${target.summaryTitle}' 기록을 삭제했습니다.`,
+      action: {
+        label: "실행 취소",
+        run: () => {
+          persistActivity({ ...target, id: newLocalId() });
+          setToast(null);
+        },
+      },
+    });
+  };
+
+  // ---------------------------------------------------------------------
+  // 육아일기 (사진 업로드 포함)
+  // ---------------------------------------------------------------------
+  const uploadDiaryMedia = async (diaryId: string, files: File[]) => {
+    setUploadingDiaryIds((prev) => new Set(prev).add(diaryId));
+    let failed = 0;
+    let firstError: string | undefined;
+    for (const file of files) {
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        const res = await fetch(`/api/diary/${encodeURIComponent(diaryId)}/media`, { method: "POST", body });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.data) {
+          failed += 1;
+          firstError = firstError ?? json?.message;
+          continue;
+        }
+        const photo: DiaryPhoto = json.data;
+        setDiaries((prev) =>
+          prev.map((d) => (d.id === diaryId ? { ...d, photos: [...d.photos, photo] } : d))
+        );
+      } catch {
+        failed += 1;
+      }
+    }
+    setUploadingDiaryIds((prev) => {
+      const next = new Set(prev);
+      next.delete(diaryId);
+      return next;
+    });
+    if (failed > 0) {
+      showToast({
+        tone: "error",
+        message: firstError
+          ? `사진 ${failed}개를 올리지 못했습니다. ${firstError}`
+          : `사진 ${failed}개를 올리지 못했습니다. 일기 글은 저장되었습니다.`,
+      });
+    }
+  };
+
+  // 실패하면 시트에 표시할 메시지를 반환한다 (작성한 글을 잃지 않도록 시트를 닫지 않음)
+  const handleSaveDiary = async (values: DiaryFormValues): Promise<string | null> => {
+    const summary = {
+      totalFeedingMl: todaySummary.formulaMl,
+      totalSleepHours: Math.round((todaySummary.totalSleepMin / 60) * 10) / 10,
+      diaperCount: todaySummary.wetCount + todaySummary.poopCount,
+    };
+    const title = values.title || "오늘의 육아일기";
+
+    if (authPhaseRef.current !== "READY") {
+      const local: DiaryItem = {
+        id: newLocalId(),
+        babyId: currentBaby.id,
+        diaryDate: todayKey,
+        title,
+        content: values.content,
+        mood: values.mood,
+        author: currentCaregiver,
+        tags: values.tags,
+        isMilestone: values.isMilestone,
+        photos: values.files.map((file, i) => ({
+          id: `${newLocalId()}-${i}`,
+          url: URL.createObjectURL(file),
+          type: file.type.startsWith("video/") ? "VIDEO" : "IMAGE",
+        })),
+        dailySummary: summary,
+      };
+      setDiaries((prev) => [local, ...prev]);
+      setSheet(null);
+      showToast({ tone: "success", message: "일기를 추가했습니다. (샘플 모드에서는 저장되지 않습니다)" });
+      return null;
+    }
+
+    try {
+      const res = await fetch("/api/diary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           babyId: currentBaby.id,
-          category,
-          label,
-          status: "RUNNING",
-          startedAt,
-          accumulatedSec: 0,
+          diaryDate: todayKey,
+          title,
+          content: values.content,
+          mood: values.mood,
+          tags: values.tags,
+          isMilestone: values.isMilestone,
+          dailySummary: summary,
         }),
-      }).catch(() => {});
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.data) {
+        return json?.message || "일기를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+      }
+      const saved: DiaryItem = json.data;
+      setDiaries((prev) => [saved, ...prev]);
+      setSheet(null);
+      showToast({ tone: "success", message: "일기를 저장했습니다." });
+      if (values.files.length > 0) void uploadDiaryMedia(saved.id, values.files);
+      return null;
+    } catch {
+      return "네트워크에 연결할 수 없어 일기를 저장하지 못했습니다. 연결 후 다시 시도해 주세요.";
     }
   };
 
-  // 타이머 일시정지/재개
-  const handleTogglePauseTimer = () => {
-    if (!runningTimer) return;
-    if (runningTimer.isPaused) {
-      const nextStartedAt = Date.now();
-      setRunningTimer({
-        ...runningTimer,
-        startedAt: nextStartedAt,
-        isPaused: false,
-      });
-      if (authPhase === "READY") {
-        fetch("/api/timers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            babyId: currentBaby.id,
-            category: runningTimer.category,
-            label: runningTimer.label,
-            status: "RUNNING",
-            startedAt: nextStartedAt,
-            accumulatedSec: runningTimer.accumulatedSec,
-          }),
-        }).catch(() => {});
-      }
-    } else {
-      const elapsed = Math.max(
-        0,
-        Math.floor((Date.now() - runningTimer.startedAt) / 1000)
-      );
-      const nextAcc = runningTimer.accumulatedSec + elapsed;
-      setRunningTimer({
-        ...runningTimer,
-        isPaused: true,
-        accumulatedSec: nextAcc,
-      });
-      if (authPhase === "READY") {
-        fetch("/api/timers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            babyId: currentBaby.id,
-            category: runningTimer.category,
-            label: runningTimer.label,
-            status: "PAUSED",
-            startedAt: runningTimer.startedAt,
-            accumulatedSec: nextAcc,
-          }),
-        }).catch(() => {});
-      }
-    }
-  };
-
-  // 타이머 종료 및 즉시 타임라인 저장
-  const handleStopAndSaveTimer = () => {
-    if (!runningTimer) return;
-    const finalSec = Math.max(60, activeTimerSeconds);
-    const mins = Math.max(1, Math.round(finalSec / 60));
-
-    let category: ActivityCategory = "FEEDING";
-    let summaryTitle = "";
-    let subDetail = `${runningTimer.startedBy}가 실시간 타이머로 기록`;
-
-    if (runningTimer.category === "FEEDING_LEFT") {
-      category = "FEEDING";
-      summaryTitle = "모유 수유";
-      subDetail = `왼쪽 (Left) · ${mins}분`;
-    } else if (runningTimer.category === "FEEDING_RIGHT") {
-      category = "FEEDING";
-      summaryTitle = "모유 수유";
-      subDetail = `오른쪽 (Right) · ${mins}분`;
-    } else if (runningTimer.category === "SLEEP") {
-      category = "SLEEP";
-      summaryTitle = "낮잠 / 수면";
-      const h = Math.floor(mins / 60);
-      const m = mins % 60;
-      subDetail = `${h > 0 ? `${h}시간 ` : ""}${m}분 수면 완료`;
-    } else if (runningTimer.category === "PUMPING") {
-      category = "PUMPING";
-      summaryTitle = "유축 완료";
-      subDetail = `${mins}분 유축 · 모유 저장소 반영`;
-    } else {
-      category = "TUMMY_TIME";
-      summaryTitle = "터미타임 (배밀이 연습)";
-      subDetail = `${mins}분 진행`;
-    }
-
-    const newRecord: ActivityRecord = {
-      id: `act-${Date.now()}`,
-      babyId: currentBaby.id,
-      category,
-      startedAt: new Date().toISOString(),
-      durationSec: finalSec,
-      recordedBy: currentCaregiver,
-      summaryTitle,
-      subDetail,
-      details: { timerCategory: runningTimer.category },
+  // ---------------------------------------------------------------------
+  // 성장 측정 / 아기 추가
+  // ---------------------------------------------------------------------
+  const handleSaveGrowth = async (values: GrowthFormValues) => {
+    const measured = new Date(`${values.date}T00:00:00.000Z`).getTime();
+    const birth = new Date(`${currentBaby.birthDate}T00:00:00.000Z`).getTime();
+    const local: GrowthItem = {
+      id: newLocalId(),
+      date: values.date,
+      ageDays: Math.max(1, Math.floor((measured - birth) / 86_400_000) + 1),
+      weightKg: values.weightKg ?? 0,
+      heightCm: values.heightCm ?? 0,
+      headCm: values.headCm ?? 0,
+      note: values.note || undefined,
     };
+    setGrowthRecords((prev) => [...prev, local]);
+    setSheet(null);
 
-    if (authPhase === "READY") {
-      fetch(`/api/timers?babyId=${encodeURIComponent(currentBaby.id)}`, {
-        method: "DELETE",
-      }).catch(() => {});
+    if (authPhaseRef.current !== "READY") {
+      showToast({ tone: "success", message: "측정 기록을 추가했습니다." });
+      return;
     }
+
+    try {
+      const res = await fetch("/api/growth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          babyId: currentBaby.id,
+          measuredDate: values.date,
+          weightKg: values.weightKg,
+          heightCm: values.heightCm,
+          headCm: values.headCm,
+          note: values.note || undefined,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.data) throw new Error(String(res.status));
+      setGrowthRecords((prev) => prev.map((g) => (g.id === local.id ? json.data : g)));
+      showToast({ tone: "success", message: "측정 기록을 저장했습니다." });
+    } catch {
+      setGrowthRecords((prev) => prev.filter((g) => g.id !== local.id));
+      showToast({ tone: "error", message: "측정 기록을 저장하지 못했습니다. 다시 시도해 주세요." });
+    }
+  };
+
+  const handleAddBaby = async (values: NewBabyValues): Promise<string | null> => {
+    if (authPhaseRef.current !== "READY") {
+      const local: BabyProfile = {
+        id: newLocalId(),
+        name: values.name,
+        nickname: values.name,
+        birthDate: values.birthDate,
+        dueDate: values.dueDate,
+        gender: values.gender === "F" ? "F" : "M",
+        bloodType: "미정",
+        weightKg: 0,
+        heightCm: 0,
+        headCm: 0,
+      };
+      setBabies((prev) => [...prev, local]);
+      setSelectedBabyId(local.id);
+      setSheet(null);
+      showToast({ tone: "success", message: `${values.name} 프로필을 추가했습니다.` });
+      return null;
+    }
+
+    try {
+      const res = await fetch("/api/babies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.data?.id) {
+        return json?.message || "아기 프로필을 추가하지 못했습니다.";
+      }
+      setSelectedBabyId(json.data.id);
+      setSelectedDay(null);
+      await loadBootstrap(json.data.id, { silent: true });
+      setSheet(null);
+      showToast({ tone: "success", message: `${values.name} 프로필을 추가했습니다.` });
+      return null;
+    } catch {
+      return "네트워크에 연결할 수 없습니다. 연결 후 다시 시도해 주세요.";
+    }
+  };
+
+  const handleSelectBaby = (id: string) => {
+    setSelectedBabyId(id);
+    setSelectedDay(null);
+    if (authPhaseRef.current === "READY") {
+      lastTimerMutationRef.current = 0;
+      setRunningTimer(null);
+      void loadBootstrap(id, { silent: true });
+    }
+  };
+
+  const handleChangeTab = (tab: ActiveTab) => {
+    setActiveTab(tab);
+    window.scrollTo({ top: 0 });
+  };
+
+  const enterDemoMode = () => {
+    // 샘플 기록이 "방금 전" 기준으로 보이도록 현재 시각에 맞춰 옮긴다
+    const shift = Date.now() - BASE_NOW_MS;
+    const shiftIso = (iso: string | undefined) =>
+      iso ? new Date(new Date(iso).getTime() + shift).toISOString() : undefined;
+    setBabies(INITIAL_BABIES);
+    setSelectedBabyId(INITIAL_BABIES[0].id);
+    setActivities(
+      INITIAL_ACTIVITIES.map((a) => ({
+        ...a,
+        startedAt: shiftIso(a.startedAt)!,
+        endedAt: shiftIso(a.endedAt),
+      }))
+    );
+    setDiaries(INITIAL_DIARIES);
+    setGrowthRecords(INITIAL_GROWTH_RECORDS);
     setRunningTimer(null);
-    void persistActivity(newRecord);
+    setAuthPhase("DEMO");
   };
 
-  // 수유방 모드(Nursery Mode) 원탭 즉시 기록 핸들러
-  const handleNurseryQuickTap = (
-    category: ActivityCategory,
-    title: string,
-    detail: string,
-    amountMl?: number,
-    diaperKind?: "WET" | "SOLID" | "BOTH"
-  ) => {
-    const newRecord: ActivityRecord = {
-      id: `act-${Date.now()}`,
-      babyId: currentBaby.id,
-      category,
-      startedAt: new Date().toISOString(),
-      amountMl,
-      recordedBy: currentCaregiver,
-      summaryTitle: title,
-      subDetail: detail,
-      details: diaperKind ? { diaperType: diaperKind } : {},
-    };
-    void persistActivity(newRecord);
-  };
-
-  // 바텀 시트 상세 기록 저장 핸들러
-  const handleSaveQuickActivity = () => {
-    if (!sheetCategory) return;
-
-    let summaryTitle = "";
-    let subDetail = quickNote.trim() || undefined;
-    let amountMl: number | undefined;
-    let durationSec: number | undefined;
-    let valueNum: number | undefined;
-    let details: Record<string, unknown> = {};
-
-    if (sheetCategory === "FEEDING") {
-      if (feedingType === "FORMULA") {
-        amountMl = formulaMl;
-        summaryTitle = `분유 수유 ${formulaMl}ml`;
-        if (!subDetail) subDetail = `젖병 수유 · ${currentCaregiver} 기록`;
-        details = { feedingType: "FORMULA" };
-      } else if (feedingType === "BREAST") {
-        durationSec = breastMinutes * 60;
-        const sideLabel =
-          breastSide === "LEFT"
-            ? "왼쪽 (Left)"
-            : breastSide === "RIGHT"
-            ? "오른쪽 (Right)"
-            : "양쪽 (Both)";
-        summaryTitle = "모유 수유";
-        subDetail = `${sideLabel} · ${breastMinutes}분`;
-        details = { feedingType: "BREAST", side: breastSide };
-      } else {
-        amountMl = formulaMl;
-        summaryTitle = `이유식 ${formulaMl}g`;
-        if (!subDetail) subDetail = "한우 브로콜리 미음";
-        details = { feedingType: "SOLID_FOOD" };
-      }
-    } else if (sheetCategory === "DIAPER") {
-      const typeLabel =
-        diaperType === "WET"
-          ? "소변 (Wet)"
-          : diaperType === "SOLID"
-          ? "대변 (Dirty)"
-          : "대소변 혼합 (Both)";
-      summaryTitle = typeLabel;
-      const colorLabel =
-        stoolColor === "YELLOW"
-          ? "황금변"
-          : stoolColor === "BROWN"
-          ? "갈색변"
-          : "녹변";
-      subDetail =
-        diaperType === "WET"
-          ? subDetail || "기저귀 교체 완료"
-          : `${colorLabel} · ${subDetail || "기저귀 교체 완료"}`;
-      details = { diaperType, stoolColor };
-    } else if (sheetCategory === "SLEEP") {
-      durationSec = sleepMinutes * 60;
-      const h = Math.floor(sleepMinutes / 60);
-      const m = sleepMinutes % 60;
-      summaryTitle = "낮잠 / 수면";
-      subDetail = `${h > 0 ? `${h}시간 ` : ""}${m > 0 ? `${m}분` : ""}`;
-    } else if (sheetCategory === "TEMPERATURE") {
-      valueNum = tempValue;
-      summaryTitle = `체온 ${tempValue.toFixed(1)}°C`;
-      subDetail = tempValue >= 37.5 ? "미열/발열 관찰 필요" : "정상 체온";
-    } else if (sheetCategory === "MEDICATION") {
-      summaryTitle = "비타민 D 드롭 / 투약";
-      subDetail = subDetail || "비타민 D 2방울 (2ml) 복용 완료";
-    } else if (sheetCategory === "BATH") {
-      summaryTitle = "목욕 & 로션 케어";
-      subDetail = subDetail || "따뜻한 물 목욕 완료";
-    } else if (sheetCategory === "PUMPING") {
-      amountMl = 120;
-      summaryTitle = "모유 유축 120ml";
-      subDetail = subDetail || "좌 60ml · 우 60ml (모유 저장팩 보관)";
-    } else if (sheetCategory === "TUMMY_TIME") {
-      durationSec = 10 * 60;
-      summaryTitle = "터미타임 (Tummy Time)";
-      subDetail = subDetail || "10분 동안 고개 들기 연습";
-    } else {
-      summaryTitle = "육아 메모 (Note)";
-      subDetail = subDetail || "오늘 컨디션 아주 좋음";
-    }
-
-    const newRecord: ActivityRecord = {
-      id: `act-${Date.now()}`,
-      babyId: currentBaby.id,
-      category: sheetCategory,
-      startedAt: new Date().toISOString(),
-      amountMl,
-      durationSec,
-      valueNum,
-      recordedBy: currentCaregiver,
-      summaryTitle,
-      subDetail,
-      details,
-    };
-
-    void persistActivity(newRecord);
-    setQuickNote("");
-    setSheetCategory(null);
-  };
-
-  // 타임라인 삭제 및 Undo 복구
-  const handleDeleteActivity = async (id: string) => {
-    const target = activities.find((a) => a.id === id);
-    if (target) setDeletedActivityBackup(target);
-    setActivities((prev) => prev.filter((a) => a.id !== id));
-
-    if (authPhase === "READY" && !id.startsWith("act-")) {
-      fetch(`/api/activities/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      }).catch((err) => console.error("[DELETE /api/activities] 오류:", err));
-    }
-  };
-
-  const handleUndoDelete = () => {
-    if (!deletedActivityBackup) return;
-    const backup = deletedActivityBackup;
-    setDeletedActivityBackup(null);
-    void persistActivity(backup);
-  };
-
-  // 감성 육아일기 저장
-  const handleSaveDiary = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!diaryTitle.trim() || !diaryContent.trim()) return;
-
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const parsedTags = diaryTags
-      .split(",")
-      .map((t) => t.trim().replace(/^#/, ""))
-      .filter(Boolean);
-
-    const newDiary: DiaryItem = {
-      id: `diary-${Date.now()}`,
-      babyId: currentBaby.id,
-      diaryDate: todayIso,
-      title: diaryTitle.trim(),
-      content: diaryContent.trim(),
-      mood: diaryMood,
-      author: currentCaregiver,
-      tags: parsedTags,
-      isMilestone: diaryMilestone,
-      photos: [],
-      dailySummary: {
-        totalFeedingMl: dailySummary.totalMl,
-        totalSleepHours: Number((dailySummary.totalSleepMin / 60).toFixed(1)),
-        diaperCount: dailySummary.wetCount + dailySummary.poopCount,
-      },
-    };
-
-    setDiaries((prev) => [newDiary, ...prev]);
-    setDiaryTitle("");
-    setDiaryContent("");
-    setDiaryMilestone(false);
-    setShowDiaryModal(false);
-    setActiveTab("DIARY");
-
-    if (authPhase === "READY") {
-      try {
-        const res = await fetch("/api/diary", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            babyId: currentBaby.id,
-            diaryDate: todayIso,
-            title: newDiary.title,
-            content: newDiary.content,
-            mood: newDiary.mood,
-            tags: parsedTags,
-            isMilestone: newDiary.isMilestone,
-          }),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data) {
-            setDiaries((prev) =>
-              prev.map((d) => (d.id === newDiary.id ? json.data : d))
-            );
-          }
-        }
-      } catch (err) {
-        console.error("[POST /api/diary] 오류:", err);
-      }
-    }
-  };
-
-  // 성장 측정값 추가 저장
-  const handleSaveGrowth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const w = parseFloat(newWeight) || currentBaby.weightKg;
-    const h = parseFloat(newHeight) || currentBaby.heightCm;
-    const hc = parseFloat(newHead) || currentBaby.headCm;
-    const todayIso = new Date().toISOString().slice(0, 10);
-
-    const newItem: GrowthItem = {
-      id: `g-${Date.now()}`,
-      date: todayIso,
-      ageDays: ageInfo.diffDays,
-      weightKg: w,
-      heightCm: h,
-      headCm: hc,
-      note: newGrowthNote.trim() || `${currentCaregiver} 측정 기록`,
-    };
-
-    setGrowthRecords((prev) => [...prev, newItem]);
-    setNewGrowthNote("");
-    setShowGrowthModal(false);
-
-    if (authPhase === "READY") {
-      try {
-        const res = await fetch("/api/growth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            babyId: currentBaby.id,
-            measuredDate: todayIso,
-            weightKg: w > 0 ? w : undefined,
-            heightCm: h > 0 ? h : undefined,
-            headCm: hc > 0 ? hc : undefined,
-            note: newItem.note,
-          }),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data) {
-            setGrowthRecords((prev) =>
-              prev.map((g) => (g.id === newItem.id ? json.data : g))
-            );
-          }
-        }
-      } catch (err) {
-        console.error("[POST /api/growth] 오류:", err);
-      }
-    }
-  };
-
-  // Sprout Track 원형 일러스트 타일 목록 정의 (public/*-128.png 정품 에셋 활용)
-  const sproutActivityTiles: {
-    key: string;
-    label: string;
-    iconSrc: string;
-    category: ActivityCategory;
-    bubbleText?: string;
-    bubbleStyle?: string;
-  }[] = [
-    {
-      key: "sleep",
-      label: "수면",
-      iconSrc: "/crib-128.png",
-      category: "SLEEP",
-      bubbleText: `☀️ ${formatBubbleDuration(dailySummary.lastSleep?.startedAt, nowMs)}`,
-      bubbleStyle: "bg-white text-slate-800 border border-amber-300 shadow-sm",
-    },
-    {
-      key: "feed",
-      label: "수유",
-      iconSrc: "/bottle-128.png",
-      category: "FEEDING",
-      bubbleText: `🍼 ${formatBubbleDuration(dailySummary.lastFeeding?.startedAt, nowMs)}`,
-      bubbleStyle: "bg-[#10b981] text-white shadow-sm",
-    },
-    {
-      key: "diaper",
-      label: "기저귀",
-      iconSrc: "/diaper-128.png",
-      category: "DIAPER",
-      bubbleText: `🧷 ${formatBubbleDuration(dailySummary.lastDiaper?.startedAt, nowMs)}`,
-      bubbleStyle: "bg-[#10b981] text-white shadow-sm",
-    },
-    {
-      key: "note",
-      label: "메모",
-      iconSrc: "/note-128.png",
-      category: "NOTE",
-    },
-    {
-      key: "bath",
-      label: "목욕",
-      iconSrc: "/bath-128.png",
-      category: "BATH",
-    },
-    {
-      key: "pump",
-      label: "유축",
-      iconSrc: "/pump-128.png",
-      category: "PUMPING",
-    },
-    {
-      key: "med",
-      label: "투약",
-      iconSrc: "/med-128.png",
-      category: "MEDICATION",
-    },
-    {
-      key: "tummy",
-      label: "터미타임",
-      iconSrc: "/activity-128.png",
-      category: "TUMMY_TIME",
-    },
-  ];
-
+  // ---------------------------------------------------------------------
+  // 화면
+  // ---------------------------------------------------------------------
   if (authPhase === "LOADING") {
     return (
-      <div className="min-h-dvh flex flex-col items-center justify-center bg-[#fdfcf8] dark:bg-slate-950 text-slate-600 dark:text-slate-300 gap-3">
-        <div className="w-12 h-12 rounded-2xl bg-[#0d8a72]/10 flex items-center justify-center animate-pulse">
-          <img src="/sprout-128.png" alt="로딩" className="w-8 h-8 object-contain" />
+      <div
+        role="status"
+        className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-[#fdfcf8] text-slate-700 dark:bg-night-900 dark:text-slate-200"
+      >
+        <div className="flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl bg-sprout-100 dark:bg-sprout-900">
+          <img src="/sprout-128.png" alt="" className="h-9 w-9 object-contain" />
         </div>
-        <p className="text-xs font-bold">베베로그 데이터를 불러오는 중...</p>
+        <p className="text-sm font-bold">기록을 불러오는 중…</p>
       </div>
     );
   }
 
   if (authPhase === "UNAUTHENTICATED") {
-    return (
-      <AuthGate
-        googleConfigured={googleConfigured}
-        onEnterDemoMode={() => setAuthPhase("DEMO")}
-      />
-    );
+    return <AuthGate googleConfigured={googleConfigured} onEnterDemoMode={enterDemoMode} />;
   }
 
   if (authPhase === "ONBOARDING" && authUser) {
@@ -957,1607 +871,284 @@ export default function SproutTrackKoreanApp() {
     );
   }
 
+  const isDemo = authPhase !== "READY";
+
   return (
-    <div className="flex flex-col min-h-dvh pb-24 bg-white dark:bg-[#111827] text-slate-900 dark:text-slate-100 transition-colors">
-      {/* =====================================================================
-          1. Sprout Track 시그니처 에메랄드/틸(Teal) 상단 히어로 헤더
-      ===================================================================== */}
-      <header className="bg-gradient-to-b from-[#0d8a72] to-[#0a725e] dark:from-[#0b6e5b] dark:to-[#085446] text-white pt-4 pb-3 px-4 shadow-md relative z-30">
-        {/* 상단 인사말 + 가족명 + 우측 파란색 알약형(Pill) 아이 선택기 (iPhone 15 Pro 393px 폭 최적화) */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            {/* 새싹(Sprout) 원형 로고 아바타 */}
-            <div className="w-11 h-11 rounded-full bg-[#fdf6e9] p-1.5 shadow-md flex items-center justify-center shrink-0 border-2 border-white/40">
-              <img
-                src="/sprout-128.png"
-                alt="Sprout Track 로고"
-                className="w-8 h-8 object-contain"
-              />
-            </div>
+    <div className="flex min-h-dvh flex-col bg-white text-slate-900 transition-colors dark:bg-night-900 dark:text-slate-100">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-xl focus:bg-white focus:px-4 focus:py-3 focus:text-sm focus:font-bold focus:text-sprout-700"
+      >
+        본문으로 건너뛰기
+      </a>
 
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <p className="text-[11px] text-emerald-100 font-medium whitespace-nowrap">
-                  안녕하세요, {currentCaregiver}님
-                </p>
-                <button
-                  onClick={() =>
-                    setCurrentCaregiver((prev) =>
-                      prev === "엄마" ? "아빠" : prev === "아빠" ? "할머니" : "엄마"
-                    )
-                  }
-                  className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/15 hover:bg-white/25 text-white font-semibold transition whitespace-nowrap shrink-0"
-                  title="양육자(PIN) 전환"
-                >
-                  양육자 전환
-                </button>
-              </div>
-              <h1 className="text-[14px] font-extrabold tracking-tight leading-snug truncate">
-                {household?.name || "튼튼이네"} ·{" "}
-                {activeTab === "HOME"
-                  ? "일일 기록장"
-                  : activeTab === "CALENDAR"
-                  ? "월간 캘린더"
-                  : activeTab === "REPORTS"
-                  ? "성장 리포트"
-                  : activeTab === "NURSERY"
-                  ? "수유방 모드"
-                  : "감성 육아일기"}
-              </h1>
-            </div>
-          </div>
+      <AppHeader
+        householdName={household?.name || "우리 가족"}
+        caregiver={currentCaregiver}
+        tabTitle={TAB_TITLES[activeTab]}
+        babies={babies}
+        currentBaby={currentBaby}
+        nowMs={nowMs}
+        onSelectBaby={handleSelectBaby}
+        onAddBaby={() => setSheet({ type: "addBaby" })}
+        onOpenSettings={() => setSheet({ type: "account" })}
+        runningTimer={runningTimer}
+        timerSeconds={timerSeconds}
+        onTogglePause={handleTogglePauseTimer}
+        onStopTimer={handleStopAndSaveTimer}
+        showTiles={activeTab === "HOME"}
+        latestAt={{
+          FEEDING: lastFeeding?.startedAt,
+          DIAPER: lastDiaper?.startedAt,
+          SLEEP: lastSleep?.endedAt ?? lastSleep?.startedAt,
+        }}
+        onTile={(category) => setSheet({ type: "activity", category })}
+      />
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* 계정 / 가족 초대코드 설정 버튼 */}
-            <button
-              onClick={() => setShowAccountModal(true)}
-              aria-label="계정 및 가족 설정"
-              className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition shrink-0"
-              title="계정 및 가족 설정"
-            >
-              <Settings className="w-4 h-4" />
+      {/* 연결 상태 / 저장 대기 안내 (본문 흐름 안에 두어 내용을 가리지 않는다) */}
+      <div aria-live="polite">
+        {isOffline ? (
+          <p className="flex items-start gap-2 bg-amber-100 px-4 py-2.5 text-sm font-semibold text-amber-950 dark:bg-amber-900/60 dark:text-amber-100">
+            <CloudOff className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              오프라인입니다.{" "}
+              {isDemo
+                ? "연결되면 다시 이용할 수 있습니다."
+                : "새 기록은 이 기기에 보관했다가 연결되면 자동으로 전송합니다."}
+            </span>
+          </p>
+        ) : pendingCount > 0 ? (
+          <div className="flex items-center justify-between gap-3 bg-amber-100 px-4 py-1.5 text-sm font-semibold text-amber-950 dark:bg-amber-900/60 dark:text-amber-100">
+            <span>저장 대기 중인 기록 {pendingCount}건</span>
+            <button type="button" onClick={syncPending} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-2 font-bold underline underline-offset-2">
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              지금 전송
             </button>
-
-            {/* 다크 모드 토글 아이콘 */}
-            <button
-              onClick={() => setDarkMode((d) => !d)}
-              aria-label="다크 모드 전환"
-              className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition shrink-0"
-            >
-              {darkMode ? <Sun className="w-4 h-4 text-amber-300" /> : <Moon className="w-4 h-4" />}
-            </button>
-
-            {/* Sprout Track 특유의 파란색 알약형(Blue Pill) 아이 프로필 드롭다운 */}
-            <div className="relative shrink-0">
-              <button
-                onClick={() => setShowBabySelector((v) => !v)}
-                className="flex items-center gap-1.5 pl-3 pr-2 py-1.5 rounded-full bg-[#2563eb] hover:bg-[#1d4ed8] text-white shadow-md border border-blue-400/40 transition whitespace-nowrap"
-              >
-                <div className="text-left leading-tight">
-                  <p className="text-xs font-extrabold whitespace-nowrap">{currentBaby.name}</p>
-                  <p className="text-[10px] text-blue-100 font-medium whitespace-nowrap">
-                    {ageInfo.weeks}주 ({ageInfo.diffDays}일)
-                  </p>
-                </div>
-                <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </div>
-              </button>
-
-              {showBabySelector && (
-                <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 z-50">
-                  <p className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase">
-                    아이 전환 (다둥이 지원)
-                  </p>
-                  {babies.map((b) => {
-                    const isSelected = b.id === currentBaby.id;
-                    const info = calculateAgeInfo(b.birthDate, b.dueDate, nowMs);
-                    return (
-                      <button
-                        key={b.id}
-                        onClick={() => {
-                          setSelectedBabyId(b.id);
-                          setShowBabySelector(false);
-                          if (authPhase === "READY") {
-                            void loadBootstrap(b.id);
-                          }
-                        }}
-                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs transition ${
-                          isSelected
-                            ? "bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-300 font-bold"
-                            : "hover:bg-slate-100 dark:hover:bg-slate-700/60"
-                        }`}
-                      >
-                        <div className="text-left">
-                          <p>
-                            {b.name} ({b.nickname})
-                          </p>
-                          <p className="text-[10px] text-slate-400">
-                            {info.weeks}주 · 생후 {info.diffDays}일 · {b.weightKg}kg
-                          </p>
-                        </div>
-                        {isSelected && <Check className="w-4 h-4 text-blue-600" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           </div>
-        </div>
+        ) : null}
+      </div>
 
-        {/* 실시간 작동 중인 타이머 배너 (ActiveFeedBanner / ActiveActivityBanner 대응) */}
-        {runningTimer && (
-          <div className="mt-3 p-3 rounded-2xl bg-slate-900/35 backdrop-blur-md border border-white/25 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-emerald-400/25 flex items-center justify-center">
-                <Timer className="w-5 h-5 text-emerald-200 animate-spin" />
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold bg-emerald-500 px-2 py-0.5 rounded-full">
-                    {runningTimer.startedBy} 진행중
-                  </span>
-                  <span className="text-xs font-semibold text-emerald-50">
-                    {runningTimer.label}
-                  </span>
-                </div>
-                <p className="text-lg font-extrabold font-mono tracking-wider mt-0.5">
-                  {formatTimerSec(activeTimerSeconds)}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleTogglePauseTimer}
-                className="p-2.5 rounded-xl bg-white/20 hover:bg-white/30 transition"
-                title={runningTimer.isPaused ? "재개" : "일시정지"}
-              >
-                {runningTimer.isPaused ? (
-                  <Play className="w-4 h-4 fill-white" />
-                ) : (
-                  <Pause className="w-4 h-4 fill-white" />
-                )}
-              </button>
-              <button
-                onClick={handleStopAndSaveTimer}
-                className="flex items-center gap-1 px-3 py-2 rounded-xl bg-white text-[#0d8a72] font-extrabold text-xs shadow-sm"
-              >
-                <Square className="w-3.5 h-3.5 fill-[#0d8a72]" />
-                <span>종료·저장</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* =====================================================================
-            2. Sprout Track 시그니처 가로 스크롤 원형 일러스트 타일 + 상단 상태 버블
-            (헤더 하단에 걸쳐지도록 배치)
-        ===================================================================== */}
-        {activeTab === "HOME" && (
-          <div className="mt-4 pt-2 overflow-x-auto no-scrollbar">
-            <div className="flex items-end gap-3.5 min-w-max pb-1 px-1">
-              {sproutActivityTiles.map((tile) => (
-                <button
-                  key={tile.key}
-                  onClick={() => setSheetCategory(tile.category)}
-                  className="flex flex-col items-center group relative pt-3 focus:outline-none"
-                >
-                  {/* 상단 경과 시간 상태 알약 버블 (Status Bubble) */}
-                  {tile.bubbleText && (
-                    <span
-                      className={`absolute top-0 z-10 px-2 py-0.5 rounded-full text-[10px] font-extrabold tracking-tight whitespace-nowrap ${tile.bubbleStyle}`}
-                    >
-                      {tile.bubbleText}
-                    </span>
-                  )}
-
-                  {/* 원형 일러스트 아이콘 컨테이너 */}
-                  <div className="w-16 h-16 rounded-full bg-[#f4f1ea] dark:bg-slate-800 border-[3px] border-white/90 dark:border-slate-700 shadow-md flex items-center justify-center overflow-hidden group-active:scale-95 transition">
-                    <img
-                      src={tile.iconSrc}
-                      alt={tile.label}
-                      className="w-14 h-14 object-cover"
-                    />
-                  </div>
-
-                  {/* 하단 한국어 라벨 */}
-                  <span className="mt-1.5 text-xs font-bold text-white drop-shadow-xs">
-                    {tile.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </header>
-
-      {/* =====================================================================
-          3. 메인 컨텐츠 영역 (HOME | CALENDAR | REPORTS | NURSERY | DIARY)
-      ===================================================================== */}
-      <main className="flex-1 px-4 pt-3 space-y-4">
-        {/* ===================================================================
-            [탭 1] 일일 기록장 & Daily Summary & 타임라인 (SproutTrackLogEntryMobile 스타일)
-        =================================================================== */}
-        {activeTab === "HOME" && (
-          <>
-            {/* 날짜 이동 네비게이터 (< 2026년 11월 11일 >) */}
-            <div className="flex items-center justify-center gap-6 py-1.5">
-              <button
-                className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"
-                aria-label="이전 날짜"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <span className="text-sm font-bold tracking-tight">
-                2026년 11월 11일 (수)
-              </span>
-              <button
-                className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"
-                aria-label="다음 날짜"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* 실시간 타이머 원터치 시작 바 (iPhone 15 Pro 폭에서 글씨 밀림 방지) */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <button
-                onClick={() => handleStartTimer("FEEDING_LEFT", "모유 수유 (왼쪽)")}
-                className="py-2 px-1.5 rounded-xl text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 dark:bg-slate-800 text-[#0d8a72] dark:text-emerald-400 border border-emerald-200/70 dark:border-slate-700 flex items-center justify-center gap-1 whitespace-nowrap transition"
-              >
-                <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                <span>모유(좌)</span>
-              </button>
-              <button
-                onClick={() => handleStartTimer("FEEDING_RIGHT", "모유 수유 (오른쪽)")}
-                className="py-2 px-1.5 rounded-xl text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 dark:bg-slate-800 text-[#0d8a72] dark:text-emerald-400 border border-emerald-200/70 dark:border-slate-700 flex items-center justify-center gap-1 whitespace-nowrap transition"
-              >
-                <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                <span>모유(우)</span>
-              </button>
-              <button
-                onClick={() => handleStartTimer("SLEEP", "낮잠/밤잠 타이머")}
-                className="py-2 px-1.5 rounded-xl text-[11px] font-bold bg-blue-50 hover:bg-blue-100 dark:bg-slate-800 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-slate-700 flex items-center justify-center gap-1 whitespace-nowrap transition"
-              >
-                <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                <span>수면측정</span>
-              </button>
-              <button
-                onClick={() => handleStartTimer("PUMPING", "유축 타이머")}
-                className="py-2 px-1.5 rounded-xl text-[11px] font-bold bg-purple-50 hover:bg-purple-100 dark:bg-slate-800 text-purple-600 dark:text-purple-400 border border-purple-200/70 dark:border-slate-700 flex items-center justify-center gap-1 whitespace-nowrap transition"
-              >
-                <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                <span>유축측정</span>
-              </button>
-            </div>
-
-            {/* Sprout Track 스타일 Daily Summary (일일 요약 그리드 + 히트맵 보기) */}
-            <section className="rounded-2xl bg-slate-50/80 dark:bg-[#1e293b]/90 border border-slate-200/80 dark:border-slate-800 p-3.5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  onClick={() => setSummaryExpanded((v) => !v)}
-                  className="flex items-center gap-1 text-xs font-extrabold text-slate-700 dark:text-slate-200 whitespace-nowrap"
-                >
-                  <span>일일 요약 (Daily Summary)</span>
-                  {summaryExpanded ? (
-                    <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
-                  )}
-                </button>
-
-                <button
-                  onClick={() => setShowHeatmap((v) => !v)}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0d8a72] dark:text-emerald-400 hover:underline whitespace-nowrap shrink-0"
-                >
-                  <Eye className="w-3.5 h-3.5 shrink-0" />
-                  <span>{showHeatmap ? "히트맵 숨기기" : "히트맵 보기"}</span>
-                </button>
-              </div>
-
-              {summaryExpanded && (
-                <div className="grid grid-cols-2 gap-y-3 gap-x-2.5 pt-1">
-                  {/* 깨어 있던 시간 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Sun className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {Math.floor(dailySummary.awakeMin / 60)}시간{" "}
-                        {dailySummary.awakeMin % 60}분
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        깨어 있던 시간
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 총 수면 시간 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Moon className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {Math.floor(dailySummary.totalSleepMin / 60)}시간{" "}
-                        {dailySummary.totalSleepMin % 60}분
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        총 수면 시간
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 수유 횟수 및 상세 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Droplets className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {dailySummary.bottleCount + dailySummary.breastCount}회 수유
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        분유 {dailySummary.totalMl}ml · 모유 {dailySummary.breastRightMin}분
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 소변 기저귀 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Sparkles className="w-4 h-4 text-[#0d8a72] dark:text-emerald-400 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {dailySummary.wetCount}회
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        소변 기저귀
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 대변 기저귀 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <div className="w-4 h-4 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                      💩
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {dailySummary.poopCount}회
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        대변 (황금변)
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 투약 / 비타민 D */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Pill className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {Math.max(1, dailySummary.medCount)}회
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        비타민 D (2방울)
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 모유 냉동/냉장 보관량 (Breast Milk Stored) */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <div className="w-4 h-4 rounded-md bg-purple-500/20 text-purple-500 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                      🍼
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        1,240 ml
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        모유 보관량
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 터미타임 / 액티비티 */}
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Award className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-extrabold leading-tight whitespace-nowrap">
-                        {dailySummary.tummyCount}회 ({dailySummary.tummyMin}분)
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        터미타임 연습
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 24시간 수유·수면 히트맵 바 (Show heatmap 클릭 시 노출) */}
-              {showHeatmap && (
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
-                  <div className="flex justify-between text-[10px] text-slate-400">
-                    <span>00시 (자정)</span>
-                    <span>06시</span>
-                    <span>12시 (정오)</span>
-                    <span>18시</span>
-                    <span>24시</span>
-                  </div>
-                  <div className="h-4 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden flex">
-                    <div style={{ width: "28%" }} className="bg-slate-500 h-full" title="밤잠" />
-                    <div style={{ width: "6%" }} className="bg-sky-400 h-full" title="새벽 수유" />
-                    <div style={{ width: "16%" }} className="h-full" />
-                    <div style={{ width: "10%" }} className="bg-amber-400 h-full" title="터미타임" />
-                    <div style={{ width: "8%" }} className="bg-emerald-500 h-full" title="기저귀/수유" />
-                    <div style={{ width: "14%" }} className="bg-slate-500 h-full" title="낮잠" />
-                    <div style={{ width: "18%" }} className="bg-sky-400 h-full" title="오후 수유" />
-                  </div>
-                </div>
-              )}
-            </section>
-
-            {/* Sprout Track 스타일 좌측 세로 타임라인 + 컬러 도트 + 둥근 정사각형 배지 리스트 */}
-            <section className="space-y-4 pb-4">
-              {groupedActivities.length === 0 ? (
-                <div className="p-6 rounded-3xl bg-slate-50 dark:bg-slate-800/70 border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-3">
-                  <p className="text-sm font-bold">
-                    아직 오늘 등록된 {currentBaby.name}의 활동 기록이 없습니다
-                  </p>
-                  <button
-                    onClick={() => setSheetCategory("FEEDING")}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0d8a72] text-white text-xs font-bold shadow-sm"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>첫 수유 기록 추가하기</span>
-                  </button>
-                </div>
-              ) : (
-                groupedActivities.map(([periodTitle, items]) => (
-                  <div key={periodTitle} className="space-y-2">
-                    <h3 className="text-xs font-bold text-slate-400 dark:text-slate-400 pl-6">
-                      {periodTitle}
-                    </h3>
-
-                    <div className="relative pl-5 space-y-4 before:content-[''] before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-200 dark:before:bg-slate-700">
-                      {items.map((item) => {
-                        const startStr = formatKoreanTime(item.startedAt);
-                        const endStr = item.endedAt
-                          ? formatKoreanTime(item.endedAt)
-                          : null;
-
-                        // Sprout Track 카테고리별 도트 & 스퀘어 아이콘 컬러 매핑
-                        const styleMap =
-                          item.category === "FEEDING"
-                            ? {
-                                dot: "bg-sky-400",
-                                box: "bg-sky-100 text-sky-600 dark:bg-sky-900/70 dark:text-sky-300",
-                              }
-                            : item.category === "DIAPER"
-                            ? {
-                                dot: "bg-[#0d8a72]",
-                                box: "bg-[#0d8a72] text-white",
-                              }
-                            : item.category === "SLEEP"
-                            ? {
-                                dot: "bg-slate-400",
-                                box: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-                              }
-                            : item.category === "TUMMY_TIME"
-                            ? {
-                                dot: "bg-amber-300",
-                                box: "bg-amber-100 text-amber-700 dark:bg-amber-900/60 dark:text-amber-200",
-                              }
-                            : {
-                                dot: "bg-rose-400",
-                                box: "bg-rose-100 text-rose-600 dark:bg-rose-900/60 dark:text-rose-200",
-                              };
-
-                        return (
-                          <div
-                            key={item.id}
-                            className="relative flex items-center justify-between gap-3 group"
-                          >
-                            {/* 좌측 타임라인 수직선 위의 컬러 도트 */}
-                            <span
-                              className={`absolute -left-[17px] w-3 h-3 rounded-full ring-4 ring-white dark:ring-[#111827] ${styleMap.dot}`}
-                            />
-
-                            <div className="flex items-center gap-3 min-w-0">
-                              {/* 둥근 정사각형 아이콘 박스 */}
-                              <div
-                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-xs ${styleMap.box}`}
-                              >
-                                {item.category === "FEEDING" && (
-                                  <Droplets className="w-5 h-5" />
-                                )}
-                                {item.category === "DIAPER" && (
-                                  <Sparkles className="w-5 h-5" />
-                                )}
-                                {item.category === "SLEEP" && (
-                                  <Moon className="w-5 h-5" />
-                                )}
-                                {item.category === "TEMPERATURE" && (
-                                  <Thermometer className="w-5 h-5" />
-                                )}
-                                {item.category !== "FEEDING" &&
-                                  item.category !== "DIAPER" &&
-                                  item.category !== "SLEEP" &&
-                                  item.category !== "TEMPERATURE" && (
-                                    <Award className="w-5 h-5" />
-                                  )}
-                              </div>
-
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <p className="text-[13px] font-bold truncate">
-                                    {item.summaryTitle}
-                                  </p>
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 shrink-0 whitespace-nowrap">
-                                    {item.recordedBy}
-                                  </span>
-                                </div>
-                                {item.subDetail && (
-                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                                    {item.subDetail}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* 우측 시각 표시 및 삭제 버튼 */}
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              <span className="text-[11px] text-slate-400 font-medium whitespace-nowrap tabular-nums">
-                                {endStr ? `${startStr}~${endStr}` : startStr}
-                              </span>
-                              <button
-                                onClick={() => handleDeleteActivity(item.id)}
-                                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-300 hover:text-rose-500 transition shrink-0"
-                                title="기록 삭제"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))
-              )}
-            </section>
-          </>
-        )}
-
-        {/* ===================================================================
-            [탭 2] Sprout Track 스타일 월간 캘린더 (CalandarMobile.png 스타일)
-        =================================================================== */}
-        {activeTab === "CALENDAR" && (
-          <div className="space-y-3 pb-4">
-            {/* 월간 이동 헤더 */}
-            <div className="p-3 rounded-2xl bg-[#0d8a72] text-white flex items-center justify-between shadow-sm">
-              <button className="p-1.5 rounded-lg hover:bg-white/10">
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <div className="text-center">
-                <div className="flex items-center justify-center gap-1.5 font-extrabold text-base">
-                  <CalendarIcon className="w-4 h-4" />
-                  <span>2026년 11월</span>
-                </div>
-                <span className="text-[11px] text-emerald-100">오늘 (11월 11일)</span>
-              </div>
-              <button className="p-1.5 rounded-lg hover:bg-white/10">
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* 요일 헤더 + 7열 월간 그리드 */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900 shadow-xs">
-              <div className="grid grid-cols-7 bg-slate-100 dark:bg-slate-800 text-center py-2 text-[11px] font-bold text-slate-500">
-                <span className="text-rose-500">일</span>
-                <span>월</span>
-                <span>화</span>
-                <span>수</span>
-                <span>목</span>
-                <span>금</span>
-                <span className="text-blue-500">토</span>
-              </div>
-
-              <div className="grid grid-cols-7 divide-x divide-y divide-slate-200 dark:divide-slate-800">
-                {Array.from({ length: 30 }, (_, i) => i + 1).map((day) => {
-                  const isToday = day === 11;
-                  const eventBadge =
-                    day === 5
-                      ? { label: "영유아검진", color: "bg-emerald-500 text-white" }
-                      : day === 10
-                      ? { label: "첫뒤집기🎉", color: "bg-amber-500 text-white" }
-                      : day === 11
-                      ? { label: `${currentBaby.name} 기록`, color: "bg-[#0d8a72] text-white" }
-                      : day === 18
-                      ? { label: "폐렴구균접종", color: "bg-blue-500 text-white" }
-                      : day === 25
-                      ? { label: "이유식시작", color: "bg-purple-500 text-white" }
-                      : null;
-
-                  return (
-                    <div
-                      key={day}
-                      className={`min-h-[76px] p-1.5 flex flex-col justify-between ${
-                        isToday
-                          ? "bg-emerald-50/70 dark:bg-emerald-950/30 ring-2 ring-inset ring-[#0d8a72]"
-                          : ""
-                      }`}
-                    >
-                      <span
-                        className={`text-xs font-bold ${
-                          isToday
-                            ? "text-[#0d8a72] dark:text-emerald-400"
-                            : "text-slate-700 dark:text-slate-300"
-                        }`}
-                      >
-                        {day}
-                      </span>
-
-                      {eventBadge && (
-                        <span
-                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md truncate ${eventBadge.color}`}
-                        >
-                          {eventBadge.label}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ===================================================================
-            [탭 3] Sprout Track 스타일 월간 리포트 & 성장 백분위 (ReportingMobile1/2 스타일)
-        =================================================================== */}
-        {activeTab === "REPORTS" && (
-          <div className="space-y-4 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-extrabold">
-                  {currentBaby.name}의 월간 리포트
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  출생일: {currentBaby.birthDate} · 생후 {ageInfo.months}개월 ({ageInfo.diffDays}일)
-                </p>
-              </div>
-              <button
-                onClick={() => setShowGrowthModal(true)}
-                className="px-3 py-2 rounded-xl bg-[#0d8a72] text-white text-xs font-bold shadow-xs"
-              >
-                + 신체 측정 입력
-              </button>
-            </div>
-
-            {/* 2x2 신체 발달 & 성장 속도 카드 그리드 */}
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800">
-                <p className="text-xs text-slate-500 dark:text-slate-400">몸무게 (Weight)</p>
-                <p className="text-xl font-extrabold mt-1">
-                  {growthRecords[growthRecords.length - 1]?.weightKg} kg
-                </p>
-                <p className="text-xs font-bold text-[#10b981] mt-1">
-                  상위 68% 백분위 →
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800">
-                <p className="text-xs text-slate-500 dark:text-slate-400">키 / 신장 (Length)</p>
-                <p className="text-xl font-extrabold mt-1">
-                  {growthRecords[growthRecords.length - 1]?.heightCm} cm
-                </p>
-                <p className="text-xs font-bold text-[#10b981] mt-1">
-                  상위 72% 백분위 →
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800">
-                <p className="text-xs text-slate-500 dark:text-slate-400">머리둘레 (Head circ.)</p>
-                <p className="text-xl font-extrabold mt-1">
-                  {growthRecords[growthRecords.length - 1]?.headCm} cm
-                </p>
-                <p className="text-xs font-bold text-[#10b981] mt-1">
-                  상위 55% 백분위 →
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800">
-                <p className="text-xs text-slate-500 dark:text-slate-400">월간 성장 속도</p>
-                <p className="text-xl font-extrabold mt-1">+0.9 kg</p>
-                <p className="text-xs text-slate-400 mt-1">지난달 대비 증가량</p>
-              </div>
-            </div>
-
-            {/* 몸무게 / 키 / 머리둘레 탭 스위치 */}
-            <div className="flex gap-2">
-              {(
-                [
-                  ["WEIGHT", "⚖️ 몸무게"],
-                  ["HEIGHT", "📏 키 (신장)"],
-                  ["HEAD", "👶 머리둘레"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => setGrowthChartMetric(key)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
-                    growthChartMetric === key
-                      ? "border-[#10b981] bg-[#10b981]/10 text-[#0d8a72] dark:text-[#10b981]"
-                      : "border-slate-200 dark:border-slate-700 text-slate-500"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* WHO / 질병관리청 표준 성장 백분위 곡선 SVG 차트 */}
-            <div className="p-4 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                  연령별 표준 성장 곡선 (WHO / 질병관리청)
-                </span>
-                <span className="text-[11px] font-bold text-orange-500">
-                  ● 우리 아이 측정치
-                </span>
-              </div>
-
-              <svg viewBox="0 0 320 150" className="w-full h-36 overflow-visible">
-                {/* 그리드 점선 */}
-                <line x1="30" y1="25" x2="300" y2="25" stroke="currentColor" className="text-slate-300 dark:text-slate-700" strokeDasharray="3 3" />
-                <line x1="30" y1="75" x2="300" y2="75" stroke="currentColor" className="text-slate-300 dark:text-slate-700" strokeDasharray="3 3" />
-                <line x1="30" y1="125" x2="300" y2="125" stroke="currentColor" className="text-slate-300 dark:text-slate-700" strokeDasharray="3 3" />
-
-                {/* 90th 백분위 점선 */}
-                <path
-                  d="M 30 115 Q 140 65, 300 20"
-                  fill="none"
-                  stroke="#94a3b8"
-                  strokeWidth="1.5"
-                  strokeDasharray="4 4"
-                />
-                {/* 50th 표준 중앙선 (에메랄드) */}
-                <path
-                  d="M 30 122 Q 140 80, 300 42"
-                  fill="none"
-                  stroke="#10b981"
-                  strokeWidth="2"
-                />
-                {/* 10th 백분위 점선 */}
-                <path
-                  d="M 30 130 Q 140 96, 300 65"
-                  fill="none"
-                  stroke="#94a3b8"
-                  strokeWidth="1.5"
-                  strokeDasharray="4 4"
-                />
-
-                {/* 우리 아이 성장 곡선 (오렌지 포인트) */}
-                <path
-                  d="M 30 121 L 115 95 L 205 66 L 285 36"
-                  fill="none"
-                  stroke="#f97316"
-                  strokeWidth="2.5"
-                />
-                {[
-                  { cx: 30, cy: 121, label: "출생" },
-                  { cx: 115, cy: 95, label: "1개월" },
-                  { cx: 205, cy: 66, label: "2개월" },
-                  { cx: 285, cy: 36, label: "3개월" },
-                ].map((pt, i) => (
-                  <g key={i}>
-                    <circle cx={pt.cx} cy={pt.cy} r="4.5" fill="#f97316" stroke="#fff" strokeWidth="1.5" />
-                    <text
-                      x={pt.cx}
-                      y="144"
-                      textAnchor="middle"
-                      className="fill-slate-400 text-[9px]"
-                    >
-                      {pt.label}
-                    </text>
-                  </g>
-                ))}
-              </svg>
-            </div>
-
-            {/* 수유 비율 분석 바 (Feeding breakdown - ReportingMobile2 스타일) */}
-            <div className="p-4 rounded-2xl bg-slate-100/90 dark:bg-[#1e293b] border border-slate-200/70 dark:border-slate-800 space-y-2.5">
-              <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                수유 유형별 비율 (Feeding Breakdown)
-              </p>
-              <div className="h-3.5 w-full rounded-full overflow-hidden flex">
-                <div style={{ width: "45%" }} className="bg-sky-400 h-full" />
-                <div style={{ width: "40%" }} className="bg-[#10b981] h-full" />
-                <div style={{ width: "15%" }} className="bg-amber-400 h-full" />
-              </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
-                <span className="flex items-center gap-1">
-                  <i className="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block" />
-                  분유 45%
-                </span>
-                <span className="flex items-center gap-1">
-                  <i className="w-2.5 h-2.5 rounded-full bg-[#10b981] inline-block" />
-                  모유 40%
-                </span>
-                <span className="flex items-center gap-1">
-                  <i className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
-                  이유식 15%
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ===================================================================
-            [탭 4] Sprout Track 시그니처 수유방 모드 (NurseryMode.png 풀스크린 대형 타일)
-        =================================================================== */}
-        {activeTab === "NURSERY" && (
-          <div
-            style={{
-              backgroundColor: `hsl(${nurseryHue}, 58%, ${Math.max(12, 34 - Math.round(nurseryDim / 3))}%)`,
-            }}
-            className="rounded-3xl p-5 text-white shadow-xl space-y-5 transition-colors relative overflow-hidden"
+      {isDemo && (
+        <div className="flex items-center justify-between gap-3 bg-slate-100 px-4 py-1.5 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+          <span>샘플 미리보기 · 기록이 저장되지 않습니다</span>
+          <button
+            type="button"
+            onClick={() => setAuthPhase("UNAUTHENTICATED")}
+            className="min-h-11 shrink-0 rounded-xl px-2 font-bold text-sprout-700 underline underline-offset-2 dark:text-sprout-300"
           >
-            {/* 대형 디지털 시계 & 날짜 */}
-            <div className="text-center space-y-1 pt-2">
-              <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-black/25 text-[10px] font-bold tracking-wider uppercase">
-                <Lock className="w-3 h-3 text-emerald-300" />
-                <span>수유방 모드 (Nursery Mode) · 화면 꺼짐 방지 {wakeLockActive ? "켜짐" : "꺼짐"}</span>
-              </div>
-              <p className="text-5xl font-serif font-light tracking-tight pt-1">
-                {String(new Date(nowMs).getHours()).padStart(2, "0")}:
-                {String(new Date(nowMs).getMinutes()).padStart(2, "0")}
-              </p>
-              <p className="text-xs tracking-widest uppercase text-white/75">
-                2026년 11월 11일 수요일 · {currentBaby.name}
-              </p>
-            </div>
+            로그인
+          </button>
+        </div>
+      )}
 
-            {/* 대형 원탭 타일 그리드 (새벽 3시에 눈부심 없이 한 손으로 누르는 버튼) */}
-            <div className="grid grid-cols-1 gap-3.5">
-              {/* 수유 타일 */}
-              <div className="p-4 rounded-2xl bg-black/20 border border-white/15 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-base font-bold">🍼 수유 (Feed)</span>
-                  <span className="text-xs text-white/75">
-                    마지막:{" "}
-                    {dailySummary.lastFeeding
-                      ? formatElapsedKo(dailySummary.lastFeeding.startedAt, nowMs)
-                      : "기록 없음"}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() =>
-                      handleNurseryQuickTap(
-                        "FEEDING",
-                        "분유 수유 160ml",
-                        "수유방 모드 원탭 기록",
-                        160
-                      )
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    분유 (160ml)
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleStartTimer("FEEDING_LEFT", "모유 수유 (왼쪽)")
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    모유 (왼쪽)
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleStartTimer("FEEDING_RIGHT", "모유 수유 (오른쪽)")
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    모유 (오른쪽)
-                  </button>
-                </div>
-              </div>
-
-              {/* 기저귀 타일 */}
-              <div className="p-4 rounded-2xl bg-black/20 border border-white/15 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-base font-bold">🧷 기저귀 (Diaper)</span>
-                  <span className="text-xs text-white/75">
-                    마지막:{" "}
-                    {dailySummary.lastDiaper
-                      ? formatElapsedKo(dailySummary.lastDiaper.startedAt, nowMs)
-                      : "기록 없음"}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() =>
-                      handleNurseryQuickTap(
-                        "DIAPER",
-                        "소변 (Wet)",
-                        "수유방 모드 원탭 기록",
-                        undefined,
-                        "WET"
-                      )
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    💧 소변 (Wet)
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleNurseryQuickTap(
-                        "DIAPER",
-                        "대변 (Dirty)",
-                        "황금변 · 수유방 모드 기록",
-                        undefined,
-                        "SOLID"
-                      )
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    💩 대변 (Dirty)
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleNurseryQuickTap(
-                        "DIAPER",
-                        "대소변 혼합 (Both)",
-                        "수유방 모드 원탭 기록",
-                        undefined,
-                        "BOTH"
-                      )
-                    }
-                    className="py-3.5 rounded-xl bg-white/15 hover:bg-white/25 active:scale-95 text-xs font-extrabold border border-white/20 transition"
-                  >
-                    ✨ 혼합 (Both)
-                  </button>
-                </div>
-              </div>
-
-              {/* 수면 & 유축 타일 */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-black/20 border border-white/15 space-y-2.5">
-                  <span className="text-sm font-bold block">🌙 수면 (Sleep)</span>
-                  <button
-                    onClick={() => handleStartTimer("SLEEP", "수면 타이머")}
-                    className="w-full py-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-extrabold border border-white/20"
-                  >
-                    수면 타이머 시작
-                  </button>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-black/20 border border-white/15 space-y-2.5">
-                  <span className="text-sm font-bold block">🍶 유축 (Pump)</span>
-                  <button
-                    onClick={() => handleStartTimer("PUMPING", "양쪽 유축 타이머")}
-                    className="w-full py-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-extrabold border border-white/20"
-                  >
-                    유축 타이머 시작
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Nursery Mode 배경 색상(Hue) 및 눈부심 방지 밝기(Dim) 슬라이더 */}
-            <div className="p-4 rounded-2xl bg-black/30 border border-white/10 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold">🎨 수유방 배경 색상 (Hue: {nurseryHue}°)</span>
-                <button
-                  onClick={() => setWakeLockActive((v) => !v)}
-                  className="px-2.5 py-1 rounded-lg bg-white/15 text-[11px] font-semibold"
-                >
-                  화면 켜짐 유지: {wakeLockActive ? "ON" : "OFF"}
-                </button>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={360}
-                value={nurseryHue}
-                onChange={(e) => setNurseryHue(Number(e.target.value))}
-                className="w-full accent-emerald-400 cursor-pointer"
-              />
-
-              <div className="flex items-center justify-between text-xs pt-1">
-                <span className="font-bold">🌙 새벽 눈부심 방지 어둡기 (Dim: {nurseryDim}%)</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={65}
-                value={nurseryDim}
-                onChange={(e) => setNurseryDim(Number(e.target.value))}
-                className="w-full accent-emerald-400 cursor-pointer"
-              />
-            </div>
-          </div>
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="flex-1 space-y-4 px-4 pb-[calc(10rem+env(safe-area-inset-bottom))] pt-4 outline-none"
+      >
+        {activeTab === "HOME" && (
+          <HomeTab
+            babyName={currentBaby.name}
+            dayKey={dayKey}
+            todayKey={todayKey}
+            onShiftDay={(delta) => {
+              const next = addDaysToKey(dayKey, delta);
+              setSelectedDay(next >= todayKey ? null : next);
+            }}
+            onGoToday={() => setSelectedDay(null)}
+            summary={daySummary}
+            daySlots={daySlots}
+            groups={dayGroups}
+            hasRunningTimer={runningTimer !== null}
+            showPending={!isDemo}
+            onStartTimer={handleStartTimer}
+            onAdd={(category) => setSheet({ type: "activity", category })}
+            onDelete={handleDeleteActivity}
+          />
         )}
 
-        {/* ===================================================================
-            [탭 5] 감성 육아일기 & 가족/OCI 인프라 상태 (DIARY & SETTINGS)
-        =================================================================== */}
+        {activeTab === "CALENDAR" && (
+          <CalendarTab
+            babyName={currentBaby.name}
+            activities={babyActivities}
+            diaries={babyDiaries}
+            growthRecords={growthRecords}
+            todayKey={todayKey}
+            nowMs={nowMinuteMs}
+            onOpenDay={(key) => {
+              setSelectedDay(key >= todayKey ? null : key);
+              handleChangeTab("HOME");
+            }}
+          />
+        )}
+
+        {activeTab === "REPORTS" && (
+          <ReportsTab
+            babyName={currentBaby.name}
+            birthDate={currentBaby.birthDate}
+            ageDays={ageInfo.diffDays}
+            ageMonths={ageInfo.months}
+            growthRecords={growthRecords}
+            recentActivities={recentActivities}
+            onAddGrowth={() => setSheet({ type: "growth" })}
+          />
+        )}
+
+        {activeTab === "NURSERY" && (
+          <NurseryTab
+            babyName={currentBaby.name}
+            nowMs={nowMs}
+            todayKey={todayKey}
+            lastFeeding={lastFeeding}
+            lastDiaper={lastDiaper}
+            formulaMl={lastFormulaMl}
+            runningTimer={runningTimer}
+            hue={nurseryHue}
+            dim={nurseryDim}
+            onChangeHue={(v) => {
+              setNurseryHue(v);
+              writePref("bebelog-nursery-hue", String(v));
+            }}
+            onChangeDim={(v) => {
+              setNurseryDim(v);
+              writePref("bebelog-nursery-dim", String(v));
+            }}
+            keepAwake={keepAwake}
+            onToggleKeepAwake={() =>
+              setKeepAwake((v) => {
+                writePref("bebelog-keep-awake", v ? "off" : "on");
+                return !v;
+              })
+            }
+            wakeLockStatus={wakeLockStatus}
+            onQuickFormula={() =>
+              addActivityFromForm(
+                { ...DEFAULT_QUICK_FORM, category: "FEEDING", feedingType: "FORMULA", formulaMl: lastFormulaMl },
+                { undoable: true }
+              )
+            }
+            onQuickDiaper={(kind) =>
+              addActivityFromForm(
+                { ...DEFAULT_QUICK_FORM, category: "DIAPER", diaperType: kind },
+                { undoable: true }
+              )
+            }
+            onStartTimer={handleStartTimer}
+          />
+        )}
+
         {activeTab === "DIARY" && (
-          <div className="space-y-4 pb-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-base font-extrabold">
-                  📖 {currentBaby.name} 성장 스토리 & 일기
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  사진과 함께 그날의 수유·수면 요약이 자동으로 남습니다.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowDiaryModal(true)}
-                className="flex items-center gap-1 px-3.5 py-2 rounded-xl bg-[#0d8a72] text-white text-xs font-bold shadow-sm"
-              >
-                <Plus className="w-4 h-4" />
-                <span>일기 작성</span>
-              </button>
-            </div>
-
-            {diaries.map((entry) => (
-              <article
-                key={entry.id}
-                className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1e293b] border border-slate-200/80 dark:border-slate-800 space-y-3"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl">{entry.mood}</span>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-slate-400">
-                          {entry.diaryDate}
-                        </span>
-                        {entry.isMilestone && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-300">
-                            🏆 발달 이정표
-                          </span>
-                        )}
-                      </div>
-                      <h3 className="text-sm font-extrabold">{entry.title}</h3>
-                    </div>
-                  </div>
-                  <span className="text-xs px-2 py-1 rounded-lg bg-white dark:bg-slate-800 font-semibold">
-                    {entry.author}
-                  </span>
-                </div>
-
-                <p className="text-xs leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-line">
-                  {entry.content}
-                </p>
-
-                <div className="flex flex-wrap gap-1.5">
-                  {entry.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="text-[11px] px-2 py-0.5 rounded-lg bg-emerald-500/10 text-[#0d8a72] dark:text-emerald-300 font-semibold"
-                    >
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              </article>
-            ))}
-
-            {/* OCI + Coolify 인프라 요약 카드 */}
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1e293b] border border-slate-200/80 dark:border-slate-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold flex items-center gap-1.5">
-                  <Server className="w-4 h-4 text-[#0d8a72]" />
-                  <span>OCI + Coolify 셀프 호스팅 상태</span>
-                </span>
-                <span className="text-[11px] font-bold text-[#10b981] flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5" /> 정상 가동중
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                가족 초대코드 <strong className="font-mono">BEBE-2026</strong> · PostgreSQL 16 + OCI Object Storage 연동
-              </p>
-            </div>
-          </div>
+          <DiaryTab
+            babyName={currentBaby.name}
+            diaries={babyDiaries}
+            uploadingIds={uploadingDiaryIds}
+            onWrite={() => setSheet({ type: "diary" })}
+          />
         )}
       </main>
 
-      {/* =====================================================================
-          4. 원형 타일 클릭 시 열리는 한국어 상세 기록 바텀 시트
-      ===================================================================== */}
-      {sheetCategory && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end justify-center">
-          <div className="w-full max-w-[480px] bg-white dark:bg-[#1e293b] rounded-t-3xl p-5 space-y-4 shadow-2xl border-t border-slate-200 dark:border-slate-700">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold">
-                {sheetCategory === "FEEDING" && "🍼 수유 기록하기"}
-                {sheetCategory === "DIAPER" && "🧷 기저귀 교체 기록하기"}
-                {sheetCategory === "SLEEP" && "🌙 수면 시간 기록하기"}
-                {sheetCategory === "NOTE" && "📝 육아 메모 남기기"}
-                {sheetCategory === "BATH" && "🛁 목욕 기록하기"}
-                {sheetCategory === "PUMPING" && "🍶 모유 유축 기록하기"}
-                {sheetCategory === "MEDICATION" && "💊 비타민 / 투약 기록하기"}
-                {sheetCategory === "TUMMY_TIME" && "👶 터미타임(배밀이) 기록하기"}
-              </h3>
-              <button
-                onClick={() => setSheetCategory(null)}
-                className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1"
-              >
-                닫기
-              </button>
-            </div>
-
-            {sheetCategory === "FEEDING" && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-2">
-                  {(
-                    [
-                      ["FORMULA", "분유 (ml)"],
-                      ["BREAST", "모유 수유"],
-                      ["SOLID_FOOD", "이유식 (g)"],
-                    ] as const
-                  ).map(([type, label]) => (
-                    <button
-                      key={type}
-                      onClick={() => setFeedingType(type)}
-                      className={`py-2.5 rounded-xl text-xs font-bold border ${
-                        feedingType === type
-                          ? "bg-[#0d8a72] text-white border-[#0d8a72]"
-                          : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                {feedingType !== "BREAST" ? (
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs text-slate-500">수유량 선택</span>
-                      <span className="text-lg font-extrabold text-[#0d8a72] dark:text-emerald-400">
-                        {formulaMl} ml
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-5 gap-1.5">
-                      {[80, 120, 160, 180, 200].map((ml) => (
-                        <button
-                          key={ml}
-                          onClick={() => setFormulaMl(ml)}
-                          className={`py-2 rounded-xl text-xs font-bold ${
-                            formulaMl === ml
-                              ? "bg-emerald-100 text-[#0d8a72] border border-[#0d8a72]"
-                              : "bg-slate-100 dark:bg-slate-800"
-                          }`}
-                        >
-                          {ml}ml
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-3 gap-2">
-                      {(
-                        [
-                          ["LEFT", "왼쪽 (Left)"],
-                          ["RIGHT", "오른쪽 (Right)"],
-                          ["BOTH", "양쪽 모두"],
-                        ] as const
-                      ).map(([side, label]) => (
-                        <button
-                          key={side}
-                          onClick={() => setBreastSide(side)}
-                          className={`py-2 rounded-xl text-xs font-bold ${
-                            breastSide === side
-                              ? "bg-emerald-100 text-[#0d8a72] border border-[#0d8a72]"
-                              : "bg-slate-100 dark:bg-slate-800"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-xs text-slate-500">수유 시간(분)</span>
-                      <div className="flex gap-1.5">
-                        {[10, 13, 15, 20].map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => setBreastMinutes(m)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
-                              breastMinutes === m
-                                ? "bg-[#0d8a72] text-white"
-                                : "bg-slate-100 dark:bg-slate-800"
-                            }`}
-                          >
-                            {m}분
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {sheetCategory === "DIAPER" && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-2">
-                  {(
-                    [
-                      ["WET", "💧 소변 (Wet)"],
-                      ["SOLID", "💩 대변 (Dirty)"],
-                      ["BOTH", "✨ 혼합 (Both)"],
-                    ] as const
-                  ).map(([t, label]) => (
-                    <button
-                      key={t}
-                      onClick={() => setDiaperType(t)}
-                      className={`py-2.5 rounded-xl text-xs font-bold border ${
-                        diaperType === t
-                          ? "bg-[#0d8a72] text-white border-[#0d8a72]"
-                          : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {sheetCategory === "SLEEP" && (
-              <div className="grid grid-cols-4 gap-2">
-                {[45, 80, 120, 180].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setSleepMinutes(m)}
-                    className={`py-2.5 rounded-xl text-xs font-bold ${
-                      sleepMinutes === m
-                        ? "bg-[#0d8a72] text-white"
-                        : "bg-slate-100 dark:bg-slate-800"
-                    }`}
-                  >
-                    {m}분
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <input
-              type="text"
-              value={quickNote}
-              onChange={(e) => setQuickNote(e.target.value)}
-              placeholder="메모 입력 (선택사항)"
-              className="w-full px-3.5 py-2.5 rounded-xl text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-            />
-
-            <button
-              onClick={handleSaveQuickActivity}
-              className="w-full py-3.5 rounded-2xl bg-[#0d8a72] hover:bg-[#0a725e] text-white font-extrabold text-sm shadow-md transition"
+      {/* 엄지 영역: 알림 토스트와 빠른 기록 버튼 */}
+      <div className="pointer-events-none fixed bottom-[calc(60px+0.75rem+env(safe-area-inset-bottom))] left-1/2 z-40 flex w-full max-w-[480px] -translate-x-1/2 flex-col items-end gap-3 px-4">
+        <div aria-live="polite" className="w-full">
+          {toast && (
+            <div
+              key={toast.id}
+              role={toast.tone === "error" ? "alert" : "status"}
+              className={`pointer-events-auto flex w-full animate-toast-in items-center gap-2 rounded-2xl py-1.5 pl-4 pr-1.5 text-sm font-semibold text-white shadow-xl ${
+                toast.tone === "error" ? "bg-rose-700" : "bg-slate-900 dark:bg-slate-700"
+              }`}
             >
-              {currentCaregiver} 이름으로 기록 저장
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 감성 육아일기 작성 모달 */}
-      {showDiaryModal && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end justify-center">
-          <form
-            onSubmit={handleSaveDiary}
-            className="w-full max-w-[480px] bg-white dark:bg-[#1e293b] rounded-t-3xl p-5 space-y-3.5 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold">📖 성장 육아일기 작성</h3>
-              <button
-                type="button"
-                onClick={() => setShowDiaryModal(false)}
-                className="text-xs text-slate-400"
-              >
-                닫기
-              </button>
-            </div>
-            <input
-              type="text"
-              required
-              value={diaryTitle}
-              onChange={(e) => setDiaryTitle(e.target.value)}
-              placeholder="일기 제목을 입력하세요"
-              className="w-full px-3.5 py-2.5 rounded-xl text-xs bg-slate-100 dark:bg-slate-800"
-            />
-            <textarea
-              rows={4}
-              required
-              value={diaryContent}
-              onChange={(e) => setDiaryContent(e.target.value)}
-              placeholder="오늘 아이의 특별한 순간을 기록해 보세요."
-              className="w-full px-3.5 py-2.5 rounded-xl text-xs bg-slate-100 dark:bg-slate-800"
-            />
-            <button
-              type="submit"
-              className="w-full py-3 rounded-2xl bg-[#0d8a72] text-white font-extrabold text-sm"
-            >
-              일기 저장하기
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* 성장 측정 입력 모달 */}
-      {showGrowthModal && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end justify-center">
-          <form
-            onSubmit={handleSaveGrowth}
-            className="w-full max-w-[480px] bg-white dark:bg-[#1e293b] rounded-t-3xl p-5 space-y-3.5 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold">📏 신체 발달 측정값 기록</h3>
-              <button
-                type="button"
-                onClick={() => setShowGrowthModal(false)}
-                className="text-xs text-slate-400"
-              >
-                닫기
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label className="text-[11px] text-slate-400">몸무게(kg)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={newWeight}
-                  onChange={(e) => setNewWeight(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-xl text-xs bg-slate-100 dark:bg-slate-800"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">키(cm)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={newHeight}
-                  onChange={(e) => setNewHeight(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-xl text-xs bg-slate-100 dark:bg-slate-800"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400">머리둘레(cm)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={newHead}
-                  onChange={(e) => setNewHead(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-xl text-xs bg-slate-100 dark:bg-slate-800"
-                />
-              </div>
-            </div>
-            <button
-              type="submit"
-              className="w-full py-3 rounded-2xl bg-[#0d8a72] text-white font-extrabold text-sm"
-            >
-              측정 기록 저장
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* 오프라인 및 삭제 실행 취소(Undo) 토스트 */}
-      {isOffline && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed top-16 left-1/2 -translate-x-1/2 w-[92%] max-w-[440px] z-40 px-4 py-2.5 rounded-2xl bg-amber-500 text-white text-xs font-bold shadow-lg"
-        >
-          ⚡ 오프라인 상태입니다. 작성한 기록은 연결 복구 시 동기화됩니다.
-        </div>
-      )}
-
-      {deletedActivityBackup && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed bottom-20 left-1/2 -translate-x-1/2 w-[92%] max-w-[440px] z-40 px-4 py-3 rounded-2xl bg-slate-900 text-white text-xs shadow-xl flex items-center justify-between gap-3"
-        >
-          <span className="truncate">
-            🗑️ <strong>{deletedActivityBackup.summaryTitle}</strong> 삭제됨
-          </span>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={handleUndoDelete}
-              className="px-3 py-1.5 rounded-xl bg-[#10b981] text-white font-bold"
-            >
-              실행 취소
-            </button>
-            <button
-              onClick={() => setDeletedActivityBackup(null)}
-              className="px-2 py-1 text-slate-400"
-            >
-              닫기
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =====================================================================
-          5. 하단 모바일 네비게이션 바 (Sprout Track 5대 핵심 뷰)
-      ===================================================================== */}
-      <nav
-        aria-label="하단 메인 네비게이션"
-        className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] z-40 bg-white/95 dark:bg-[#111827]/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800 px-2 py-1.5"
-      >
-        <div className="grid grid-cols-5 items-center">
-          <button
-            onClick={() => setActiveTab("HOME")}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] text-[11px] ${
-              activeTab === "HOME"
-                ? "text-[#0d8a72] dark:text-[#10b981] font-extrabold"
-                : "text-slate-400 font-medium"
-            }`}
-          >
-            <StickyNote className="w-5 h-5" />
-            <span>기록장</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("CALENDAR")}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] text-[11px] ${
-              activeTab === "CALENDAR"
-                ? "text-[#0d8a72] dark:text-[#10b981] font-extrabold"
-                : "text-slate-400 font-medium"
-            }`}
-          >
-            <CalendarIcon className="w-5 h-5" />
-            <span>캘린더</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("NURSERY")}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] text-[11px] ${
-              activeTab === "NURSERY"
-                ? "text-[#0d8a72] dark:text-[#10b981] font-extrabold"
-                : "text-slate-400 font-medium"
-            }`}
-          >
-            <div className="-mt-4 w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#0d8a72] to-[#10b981] text-white shadow-md flex items-center justify-center">
-              <MonitorSmartphone className="w-5 h-5" />
-            </div>
-            <span className="mt-0.5">수유방모드</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("REPORTS")}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] text-[11px] ${
-              activeTab === "REPORTS"
-                ? "text-[#0d8a72] dark:text-[#10b981] font-extrabold"
-                : "text-slate-400 font-medium"
-            }`}
-          >
-            <BarChart3 className="w-5 h-5" />
-            <span>리포트</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("DIARY")}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-[48px] text-[11px] ${
-              activeTab === "DIARY"
-                ? "text-[#0d8a72] dark:text-[#10b981] font-extrabold"
-                : "text-slate-400 font-medium"
-            }`}
-          >
-            <BookOpen className="w-5 h-5" />
-            <span>육아일기</span>
-          </button>
-        </div>
-      </nav>
-
-      {/* Google 계정 & 가족 초대코드 설정 모달 */}
-      {showAccountModal && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-3"
-          onClick={() => setShowAccountModal(false)}
-        >
-          <div
-            className="w-full max-w-[440px] bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold flex items-center gap-2">
-                <Users className="w-5 h-5 text-[#0d8a72]" />
-                계정 및 가족 설정
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowAccountModal(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {authPhase === "READY" && authUser ? (
-              <>
-                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 flex items-center gap-3">
-                  {authUser.avatarUrl ? (
-                    <img
-                      src={authUser.avatarUrl}
-                      alt={authUser.name}
-                      className="w-10 h-10 rounded-full object-cover border border-slate-200"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-[#0d8a72] text-white flex items-center justify-center font-bold">
-                      {authUser.name[0]}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold truncate">
-                      {authUser.name} ({household?.myRelationLabel})
-                    </p>
-                    <p className="text-xs text-slate-500 truncate">{authUser.email}</p>
-                  </div>
-                </div>
-
-                {household && (
-                  <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                    <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                      공동 양육자 초대 코드 ({household.name})
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <code className="flex-1 py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 text-center font-mono text-base font-extrabold tracking-widest text-[#0d8a72]">
-                        {household.inviteCode}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(household.inviteCode);
-                          setCopiedInvite(true);
-                          setTimeout(() => setCopiedInvite(false), 2000);
-                        }}
-                        className="min-h-[42px] px-3.5 rounded-xl bg-[#0d8a72] text-white text-xs font-bold flex items-center gap-1.5"
-                      >
-                        {copiedInvite ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                        {copiedInvite ? "복사됨" : "복사"}
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
-                      배우자나 가족이 Google 로그인 후 이 코드를 입력하면 아기 기록을 함께 보고 작성할 수 있습니다.
-                    </p>
-                  </div>
-                )}
-
+              {toast.tone === "error" ? (
+                <CircleAlert className="h-5 w-5 shrink-0" aria-hidden="true" />
+              ) : (
+                <CircleCheck className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" />
+              )}
+              <span className="min-w-0 flex-1 py-1.5">{toast.message}</span>
+              {toast.action && (
                 <button
                   type="button"
-                  onClick={() => signOut({ callbackUrl: "/" })}
-                  className="w-full min-h-[46px] rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-bold text-sm flex items-center justify-center gap-2"
+                  onClick={toast.action.run}
+                  className="min-h-11 shrink-0 rounded-xl bg-white/15 px-3.5 font-extrabold text-emerald-200 active:bg-white/30"
                 >
-                  <LogOut className="w-4 h-4" />
-                  Google 계정 로그아웃
+                  {toast.action.label}
                 </button>
-              </>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  현재는 샘플 데이터 미리보기 모드입니다. Google 계정으로 로그인하면 개인 PostgreSQL DB에 처음부터 우리 아기 기록을 저장할 수 있습니다.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAccountModal(false);
-                    setAuthPhase("UNAUTHENTICATED");
-                  }}
-                  className="w-full min-h-[48px] rounded-2xl bg-[#0d8a72] text-white font-bold text-sm"
-                >
-                  Google 로그인 화면으로 이동
-                </button>
-              </div>
-            )}
-          </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                aria-label="알림 닫기"
+                className="icon-btn shrink-0 text-white/80 active:bg-white/20"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+          )}
         </div>
+
+        {activeTab === "HOME" && sheet === null && (
+          <button
+            type="button"
+            onClick={() => setSheet({ type: "activity", category: null })}
+            aria-label="기록 추가"
+            className="pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full bg-sprout-600 text-white shadow-lg shadow-sprout-900/30 transition-colors duration-150 hover:bg-sprout-700 active:bg-sprout-800"
+          >
+            <Plus className="h-7 w-7" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      <BottomNav activeTab={activeTab} onChange={handleChangeTab} />
+
+      {sheet?.type === "activity" && (
+        <ActivitySheet
+          initialCategory={sheet.category}
+          caregiver={currentCaregiver}
+          lastFormulaMl={lastFormulaMl}
+          onSave={handleSaveSheetActivity}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.type === "diary" && (
+        <DiarySheet
+          babyName={currentBaby.name}
+          attachMode={isDemo ? "preview-only" : mediaConfigured ? "enabled" : "unavailable"}
+          onSave={handleSaveDiary}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.type === "growth" && (
+        <GrowthSheet
+          babyName={currentBaby.name}
+          todayKey={todayKey}
+          birthDate={currentBaby.birthDate}
+          onSave={handleSaveGrowth}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.type === "addBaby" && (
+        <AddBabySheet todayKey={todayKey} onSubmit={handleAddBaby} onClose={() => setSheet(null)} />
+      )}
+      {sheet?.type === "account" && (
+        <AccountSheet
+          authUser={authUser}
+          household={household}
+          isDemo={isDemo}
+          darkMode={darkMode}
+          onToggleDarkMode={() =>
+            setDarkMode((d) => {
+              writePref("bebelog-theme", d ? "light" : "dark");
+              return !d;
+            })
+          }
+          caregiver={currentCaregiver}
+          onChangeCaregiver={setCurrentCaregiver}
+          onSignOut={() => signOut({ callbackUrl: "/" })}
+          onGoToLogin={() => {
+            setSheet(null);
+            setAuthPhase("UNAUTHENTICATED");
+          }}
+          onClose={() => setSheet(null)}
+        />
       )}
     </div>
   );

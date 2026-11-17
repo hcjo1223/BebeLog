@@ -11,6 +11,8 @@ const nextConfig: NextConfig = {
   distDir: process.env.DOCKER_BUILD === "true" ? ".next" : isProdBuild ? ".next-prod" : ".next",
   output: isProdBuild ? "standalone" : undefined,
   reactStrictMode: true,
+  // 개발용 표시기가 왼쪽 아래 하단 탭(기록장)을 가려 눌리지 않으므로 끈다
+  devIndicators: false,
 };
 
 export default nextConfig;

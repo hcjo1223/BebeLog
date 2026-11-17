@@ -98,6 +98,7 @@ model HouseholdMember {
   user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([householdId, userId])
+  @@index([userId])
   @@map("household_members")
 }
 
@@ -197,6 +198,7 @@ model DiaryEntry {
   mood        String?      // 오늘의 기분 이모지 (😊, 😴, 😭, 🥰 등)
   tags        String[]     // 해시태그 배열 (["첫뒤집기", "100일"])
   isMilestone Boolean      @default(false) @map("is_milestone") // 발달 이정표 여부
+  dailySummary Json?       @map("daily_summary") @db.JsonB // 작성 시점의 수유·수면·기저귀 요약 스냅샷
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
 
@@ -205,6 +207,7 @@ model DiaryEntry {
   media       DiaryMedia[]
 
   @@index([babyId, diaryDate(sort: Desc)])
+  @@index([authorId])
   @@map("diary_entries")
 }
 
@@ -212,7 +215,7 @@ model DiaryEntry {
 model DiaryMedia {
   id        String     @id @default(uuid()) @db.Uuid
   diaryId   String     @map("diary_id") @db.Uuid
-  mediaUrl  String     @map("media_url") // OCI Object Storage S3 URL
+  mediaUrl  String     @map("media_url") // OCI Object Storage 객체 키 (diary/<babyId>/<diaryId>/<uuid>.<ext>)
   mediaType String     @default("IMAGE") @map("media_type") // IMAGE | VIDEO
   sortOrder Int        @default(0) @map("sort_order")
 

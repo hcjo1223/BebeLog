@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getAuthenticatedUser, verifyBabyAccess } from "@/lib/auth-helper";
+import { DiarySummarySchema } from "@/lib/validators/diary";
 
 const CreateDiarySchema = z.object({
   babyId: z.string().uuid(),
@@ -11,6 +12,7 @@ const CreateDiarySchema = z.object({
   mood: z.string().max(10).default("🥰"),
   tags: z.array(z.string()).default([]),
   isMilestone: z.boolean().default(false),
+  dailySummary: DiarySummarySchema.optional(),
 });
 
 // 감성 육아일기 저장 API
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
         mood: input.mood,
         tags: input.tags,
         isMilestone: input.isMilestone,
+        dailySummary: input.dailySummary,
       },
     });
 
@@ -63,7 +66,7 @@ export async function POST(request: Request) {
           tags: created.tags,
           isMilestone: created.isMilestone,
           photos: [],
-          dailySummary: {
+          dailySummary: input.dailySummary ?? {
             totalFeedingMl: 0,
             totalSleepHours: 0,
             diaperCount: 0,
