@@ -98,6 +98,7 @@ model HouseholdMember {
   user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([householdId, userId])
+  @@index([userId])
   @@map("household_members")
 }
 
@@ -205,6 +206,7 @@ model DiaryEntry {
   media       DiaryMedia[]
 
   @@index([babyId, diaryDate(sort: Desc)])
+  @@index([authorId])
   @@map("diary_entries")
 }
 
