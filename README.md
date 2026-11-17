@@ -5,11 +5,13 @@ GitHub의 대표적인 육아 트래커 오픈소스 **Baby Buddy**의 정밀한
 ## 1. 주요 기능
 
 * **원탭/원핸드(One-Hand) 초간편 기록**: 수유(모유 좌/우, 분유 ml, 이유식), 수면, 기저귀(배변 색상/무르기), 체온, 투약, 목욕을 바텀 시트(Bottom Sheet)에서 3초 만에 기록.
-* **가족 간 실시간 타이머 동기화**: 엄마가 시작한 수유/수면 타이머를 아빠나 할머니 화면에서도 실시간으로 확인하고 종료·저장 가능.
-* **통합 타임라인 + JSONB 아키텍처**: 단일 `activity_logs` 테이블과 PostgreSQL `JSONB` 상세 속성을 결합하여 고속 타임라인 조회 및 카테고리별 정밀 통계 지원.
-* **감성 육아일기 & 자동 일일 요약**: 일기 작성 시 그날의 총 수유량(ml), 총 수면 시간, 기저귀 교체 횟수가 일기 하단에 자동 스냅샷으로 첨부.
-* **Google OAuth 로그인 & 가족 초대 코드**: Google 계정으로 간편 로그인 후, 처음부터 새 가족·아기 프로필을 세팅하거나 6자리 초대 코드로 배우자와 실시간 DB를 공유.
-* **새벽 수유 다크 모드 & 수유방 모드(Nursery Mode)**: 눈부심 방지 다크 모드, 색조·밝기 조절 가능한 수유방 전용 화면, 복수 자녀(다둥이) 프로필 즉시 전환 지원.
+* **가족 간 타이머 공유**: 엄마가 시작한 수유/수면 타이머가 약 10초 안에 아빠나 할머니 화면에 나타나고, 누구든 종료·저장할 수 있습니다. 화면으로 돌아오거나 1분마다 다른 가족의 기록도 자동으로 갱신됩니다.
+* **오프라인 기록 보관**: 연결이 끊겨도 기록을 남길 수 있고, 연결되면 자동으로 서버에 전송합니다. (앱을 닫기 전까지 기기 메모리에 보관)
+* **통합 타임라인 + JSONB 아키텍처**: 단일 `activity_logs` 테이블과 PostgreSQL `JSONB` 상세 속성을 결합하여 고속 타임라인 조회 및 카테고리별 통계 지원.
+* **날짜별 기록장 · 월간 캘린더 · 성장 리포트**: 날짜를 넘겨 지난 기록을 보고, 캘린더에서 기록·일기·이정표가 있는 날을 확인하며, 몸무게/키/머리둘레 추이를 그래프로 봅니다.
+* **감성 육아일기 & 일일 요약 스냅샷**: 일기 작성 시 그날의 분유량(ml), 수면 시간, 기저귀 교체 횟수가 함께 저장됩니다. OCI Object Storage를 연결하면 사진·영상(일기당 6개)을 첨부할 수 있습니다.
+* **Google OAuth 로그인 & 가족 초대 코드**: Google 계정으로 로그인 후 새 가족·아기 프로필을 만들거나 초대 코드로 합류합니다. 둘째·쌍둥이는 상단 아이 선택 메뉴에서 추가합니다.
+* **다크 모드 & 수유방 모드(Nursery Mode)**: 큰 버튼의 원탭 기록, 색조·밝기 조절, 화면 꺼짐 방지(Screen Wake Lock API 지원 브라우저).
 
 ---
 
@@ -29,7 +31,14 @@ npm run db:seed
 
 # 4. 개발 서버 실행 (http://localhost:3000)
 npm run dev
+
+# 5. 검사 (단위 테스트 / 린트 / 타입)
+npm test
+npm run lint
+npm run typecheck
 ```
+
+> 스키마가 바뀐 버전으로 올릴 때는 `npm run db:push`를 다시 실행해 새 인덱스와 `diary_entries.daily_summary` 컬럼을 반영하세요.
 
 ---
 
@@ -45,6 +54,6 @@ npm run dev
      * `DATABASE_URL`: PostgreSQL 16 연결 주소
      * `AUTH_SECRET`, `AUTH_TRUST_HOST=true`, `AUTH_URL=https://<도메인>`
      * `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (Google Cloud Console OAuth 2.0)
-     * `OCI_S3_*` (선택: 육아일기 사진/영상 저장용)
+     * `OCI_S3_ENDPOINT`, `OCI_S3_REGION`, `OCI_S3_BUCKET`, `OCI_S3_ACCESS_KEY_ID`, `OCI_S3_SECRET_ACCESS_KEY` (선택: 육아일기 사진/영상 저장용. 비공개 버킷을 사용하며, 미설정 시 일기는 글만 저장됩니다)
    * Google OAuth는 외부 도메인에서 `https://` 콜백 URI(`<도메인>/api/auth/callback/google`)를 요구하므로 Coolify Traefik에서 Let's Encrypt SSL을 활성화합니다.
    * 헬스체크 경로는 `/api/health` (포트 `3000`)로 자동 설정되어 무중단 배포가 수행됩니다.

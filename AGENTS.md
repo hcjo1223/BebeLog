@@ -24,3 +24,24 @@
    - 기록 삭제 시 실수를 복구할 수 있도록 **실행 취소(Undo) 토스트**를 제공하고, 네트워크 단절(Offline) 배너를 표시합니다.
 3. **Database & Prisma Hygiene (`prisma-expert`, `postgres-best-practices`)**:
    - 타임라인 조회(`babyId + startedAt DESC`) 및 외래키(`recordedBy`, `startedBy`) 인덱스를 항상 유지합니다.
+
+## 3. 검증 명령 (`test-driven-development`)
+
+변경 후 아래 세 가지를 모두 통과시킵니다.
+
+```bash
+npm test          # Vitest 단위 테스트 (src/lib/__tests__)
+npm run lint      # ESLint (next/core-web-vitals + typescript)
+npm run typecheck # tsc --noEmit
+```
+
+- 날짜 계산, 일일 요약 집계, 기록 변환처럼 화면과 무관한 로직은 `src/lib/`의 순수 함수로 두고 테스트를 먼저 작성합니다.
+
+## 4. UI 구현 규칙
+
+- **구조**: `src/app/page.tsx`는 상태와 서버 동기화만 담당합니다. 화면은 `src/components/tabs/`, 입력 시트는 `src/components/sheets/`, 공용 부품은 `src/components/ui/`에 둡니다.
+- **색상 토큰**: 컴포넌트에 색상 hex를 직접 쓰지 않고 `tailwind.config.ts`의 `sprout-*`(브랜드 틸), `night-*`(다크 표면)을 사용합니다. 흰 글씨를 올리는 배경은 `sprout-600` 이상(대비 4.5:1)을 씁니다.
+- **공용 클래스** (`globals.css`): `.btn-primary`, `.btn-secondary`, `.chip`, `.field`, `.field-label`, `.icon-btn`, `.card`, `.text-muted`.
+- **터치/글자 크기**: 누를 수 있는 요소는 44px 이상, 본문·보조 글자는 12px 이상, 입력 필드는 16px(iOS 자동 확대 방지).
+- **아이콘**: 구조적 아이콘은 `lucide-react`를 쓰고 이모지를 아이콘으로 쓰지 않습니다. 장식용 아이콘에는 `aria-hidden="true"`, 아이콘만 있는 버튼에는 `aria-label`을 붙입니다.
+- **모달**: 새 입력 화면은 `BottomSheet`를 사용합니다(포커스 가둠, Esc 닫기, 안전 영역 처리 포함).
